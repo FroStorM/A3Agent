@@ -1,15 +1,15 @@
-# GA-SOLO 通用智能体桌面应用
+# A3Agent 通用智能体桌面应用
 
 ## 项目概述
 
-GA-SOLO 是一个基于 Tauri 框架构建的桌面智能体应用，集成了 Python 后端服务、Web 前端界面和浏览器自动化能力。应用支持多模型 LLM 对话、网页自动化操作、任务计划调度和 SOP 自动化执行。
+A3Agent 是一个基于 Tauri 框架构建的桌面智能体应用，集成了 Python 后端服务、Web 前端界面和浏览器自动化能力。应用支持多模型 LLM 对话、网页自动化操作、任务计划调度和 SOP 自动化执行。
 
 ---
 
 ## 目录结构
 
 ```
-GA-SOLO/
+A3Agent/
 ├── python-backend/           # Python 后端核心代码
 │   ├── api_server.py         # FastAPI HTTP 服务器
 │   ├── agentmain.py          # Agent 主逻辑入口
