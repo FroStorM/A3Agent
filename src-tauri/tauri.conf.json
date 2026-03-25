@@ -30,9 +30,7 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "externalBin": [
-      "bin/python-backend"
-    ],
+    
     "resources": [
       "../python-backend/**/*",
       "../frontend/**/*"
