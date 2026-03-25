@@ -24,3 +24,16 @@ dist-ssr
 *.sw?
 ga_config/
 mykey.json
+
+# 构建产物
+src-tauri/
+target/
+temp/
+node_modules/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.dylib
