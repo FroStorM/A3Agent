@@ -6,7 +6,7 @@ import time
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QPushButton, QLabel, QSystemTrayIcon, QMenu, QAction, QLineEdit, QMessageBox)
 from PyQt5.QtCore import Qt, QUrl, QSize, QPoint, pyqtSignal, QTimer, QRectF
-from PyQt5.QtGui import QIcon, QPainter, QColor, QBrush, QCursor, QPen, QFont, QPixmap, QBitmap, QPainterPath, QDesktopServices
+from PyQt5.QtGui import QIcon, QPainter, QColor, QBrush, QCursor, QPen, QFont, QPixmap, QBitmap, QPainterPath, QRegion, QDesktopServices
 import requests
 import json
 import urllib.request
@@ -15,11 +15,15 @@ import socket
 import traceback
 from datetime import datetime
 import uvicorn
+from path_utils import app_root_dir, ensure_dir, temp_dir
 
 SERVER_HOST = "127.0.0.1"
 SERVER_PORT = 8000
 STARTUP_LOG = "/tmp/generic-agent-desktop.log"
 APP_RESOURCE_DIR = os.path.dirname(os.path.abspath(__file__))
+APP_ICON_PATH = os.path.join(APP_RESOURCE_DIR, "frontend", "app_icon_round.png")
+APP_FALLBACK_ICON_PATH = os.path.join(APP_RESOURCE_DIR, "frontend", "logo-transparent.png")
+APP_EFFECTIVE_ICON_PATH = APP_ICON_PATH if os.path.exists(APP_ICON_PATH) else APP_FALLBACK_ICON_PATH
 
 def get_local_url(path=""):
     return f"http://{SERVER_HOST}:{SERVER_PORT}{path}"
@@ -144,10 +148,11 @@ class FloatingLogo(QWidget):
         super().__init__()
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setFixedSize(70, 70) # Keep the floating button perfectly round
         self.setGeometry(100, 100, 70, 70) # Slightly larger for better visual
         
         # Load logo image
-        self.logo_pixmap = QPixmap(os.path.join(APP_RESOURCE_DIR, "frontend", "logo_square.png"))
+        self.logo_pixmap = QPixmap(APP_FALLBACK_ICON_PATH)
         if self.logo_pixmap.isNull():
             # Fallback if not found
             self.logo_pixmap = None
@@ -164,7 +169,15 @@ class FloatingLogo(QWidget):
         self.timer.start(2000) # Check every 2 seconds
         
         # Tooltip
-        self.setToolTip("Generic Agent - Idle")
+        self.setToolTip("A3Agent - Idle")
+
+    def resizeEvent(self, event):
+        # Force the window itself to be circular so it doesn't look like a square tile.
+        try:
+            self.setMask(QRegion(self.rect(), QRegion.Ellipse))
+        except Exception:
+            pass
+        super().resizeEvent(event)
 
     def check_status(self):
         try:
@@ -180,7 +193,7 @@ class FloatingLogo(QWidget):
                     if self.status != new_status:
                         self.status = new_status
                         self.status_text = "Running..." if is_running else "Idle"
-                        self.setToolTip(f"Generic Agent - {self.status_text}")
+                        self.setToolTip(f"A3Agent - {self.status_text}")
                         self.update() # Trigger repaint
         except Exception:
             pass
@@ -221,14 +234,14 @@ class FloatingLogo(QWidget):
             painter.drawPixmap(5, 5, 60, 60, self.logo_pixmap)
             painter.setClipping(False) # Reset clipping
         else:
-            # Fallback: Draw "GA" Logo (Generic Agent)
+            # Fallback: Draw "A3" Logo
             painter.setPen(QColor("white"))
             font = painter.font()
             font.setBold(True)
             font.setFamily("Arial")
             font.setPointSize(18)
             painter.setFont(font)
-            painter.drawText(QRectF(5, 5, 60, 60), Qt.AlignCenter, "GA")
+            painter.drawText(QRectF(5, 5, 60, 60), Qt.AlignCenter, "A3")
         
         # Draw Small Status Dot indicator if running
         if self.status == "running":
@@ -272,7 +285,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self._is_quitting = False
-        self.setWindowTitle("Generic Agent")
+        self.setWindowTitle("A3Agent")
         self.resize(1200, 800)
         
         self.browser = None
@@ -316,7 +329,7 @@ class MainWindow(QMainWindow):
             layout = QVBoxLayout(w)
             layout.setContentsMargins(24, 24, 24, 24)
             layout.setSpacing(12)
-            title = QLabel("Generic Agent 已启动")
+            title = QLabel("A3Agent 已启动")
             font = title.font()
             font.setPointSize(font.pointSize() + 4)
             font.setBold(True)
@@ -348,11 +361,11 @@ class MainWindow(QMainWindow):
         self.floating_logo.clicked.connect(self.restore_window)
         
         # Set Window Icon
-        self.setWindowIcon(QIcon(os.path.join(APP_RESOURCE_DIR, "frontend", "logo_square.png")))
+        self.setWindowIcon(QIcon(APP_EFFECTIVE_ICON_PATH))
 
         # System Tray (Optional, standard for desktop apps)
         self.tray_icon = QSystemTrayIcon(self)
-        self.tray_icon.setIcon(QIcon(os.path.join(APP_RESOURCE_DIR, "frontend", "logo_square.png")))
+        self.tray_icon.setIcon(QIcon(APP_EFFECTIVE_ICON_PATH))
         
         # Menu
         tray_menu = QMenu()
@@ -452,8 +465,8 @@ if __name__ == "__main__":
         if os.environ.get("AI_AGENT") == "TRAE" or os.environ.get("TRAE_SANDBOX_CLI_PATH"):
             user_data_dir = "/tmp/Generic Agent"
         else:
-            user_data_dir = os.path.expanduser("~/Library/Application Support/Generic Agent")
-        os.makedirs(user_data_dir, exist_ok=True)
+            user_data_dir = str(app_root_dir("Generic Agent"))
+        ensure_dir(user_data_dir)
         
         log_line(f"Running in frozen mode. Redirecting to user data dir: {user_data_dir}")
 
@@ -478,9 +491,7 @@ if __name__ == "__main__":
                 log_line(f"Assets copy failed: {e}")
 
         # 3. Temp (Mutable)
-        user_temp = os.path.join(user_data_dir, "temp")
-        if not os.path.exists(user_temp):
-            os.makedirs(user_temp)
+        user_temp = str(temp_dir(root=user_data_dir))
 
         # 4. Scheduler task dirs (Mutable)
         for sub in ("sche_tasks/pending", "sche_tasks/running", "sche_tasks/done"):
@@ -543,6 +554,7 @@ if __name__ == "__main__":
 
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False) # Keep running when main window hidden
+    app.setWindowIcon(QIcon(APP_EFFECTIVE_ICON_PATH))
     try:
         app.aboutToQuit.connect(on_app_quit)
     except Exception:

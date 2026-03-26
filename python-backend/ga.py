@@ -2,6 +2,7 @@ import sys, os, re, json, time, threading
 from datetime import datetime
 from pathlib import Path
 import tempfile, traceback, subprocess, itertools, collections
+from path_utils import temp_dir
 if sys.stdout is None: sys.stdout = open(os.devnull, "w")
 if sys.stderr is None: sys.stderr = open(os.devnull, "w")
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -11,6 +12,10 @@ _resource_dir = os.environ.get("GA_BASE_DIR") or _this_dir
 if _resource_dir.endswith(".zip") and os.path.isfile(_resource_dir):
     _resource_dir = os.path.dirname(os.path.dirname(_resource_dir))
 _data_dir = os.environ.get("GA_USER_DATA_DIR") or _resource_dir
+
+
+def _temp_dir(*parts):
+    return str(temp_dir(*parts, root=_data_dir))
 
 from agent_loop import BaseHandler, StepOutcome, try_call_generator
 
@@ -22,7 +27,7 @@ def code_run(code, code_type="python", timeout=60, cwd=None, code_cwd=None, stop
     """
     preview = (code[:60].replace('\n', ' ') + '...') if len(code) > 60 else code.strip()
     yield f"[Action] Running {code_type} in {os.path.basename(cwd)}: {preview}\n"
-    cwd = cwd or os.path.join(_data_dir, 'temp'); tmp_path = None
+    cwd = cwd or _temp_dir(); tmp_path = None
     if code_type == "python":
         tmp_file = tempfile.NamedTemporaryFile(suffix=".ai.py", delete=False, mode='w', encoding='utf-8', dir=code_cwd)
         tmp_file.write(code)

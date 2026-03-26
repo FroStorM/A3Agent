@@ -7,6 +7,9 @@ import tempfile
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from sidercall import SiderLLMSession, LLMSession, ToolClient
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+BACKEND_DIR = SCRIPT_DIR.parent
+
 
 ask = SiderLLMSession().ask
 
@@ -15,7 +18,7 @@ def generate_tool_schema():
     """
     通过代码内省，将 Handler 的逻辑映射为高语义的工具描述。
     """
-    with open('../ga.py', 'r', encoding='utf-8') as f:
+    with open(BACKEND_DIR / 'ga.py', 'r', encoding='utf-8') as f:
         ga_code = f.read()
     # 极简且具备高度概括能力的元 Prompt
     meta_prompt = f"""
@@ -69,7 +72,7 @@ def generate_tool_schema():
         final_schema = json.loads(clean_json)
         
         if final_schema:
-            with open('tools_schema.json', 'w', encoding='utf-8') as f:
+            with open(SCRIPT_DIR / 'tools_schema.json', 'w', encoding='utf-8') as f:
                 json.dump(final_schema, f, indent=2, ensure_ascii=False)
             print("✅ 成功从代码内省生成 Schema 并持久化。")
         return final_schema
@@ -80,7 +83,10 @@ def generate_tool_schema():
 
 
 def make_system_prompt(ga_code_path='../ga.py'):
-    with open(ga_code_path, 'r', encoding='utf-8') as f:
+    ga_path = Path(ga_code_path)
+    if not ga_path.is_absolute():
+        ga_path = (BACKEND_DIR / ga_path).resolve()
+    with open(ga_path, 'r', encoding='utf-8') as f:
         ga_code = f.read()
 
     # 这个元 Prompt 的目标是生成“世界观”而非“说明书”
@@ -117,7 +123,7 @@ def make_system_prompt(ga_code_path='../ga.py'):
     print("📝 生成的 System Prompt 内容如下：\n")
     print(system_prompt_content)
     clean_content = re.sub(r'<[^>]+>', '', system_prompt_content)
-    with open('sys_prompt.txt', 'w', encoding='utf-8') as f:
+    with open(SCRIPT_DIR / 'sys_prompt.txt', 'w', encoding='utf-8') as f:
         f.write(clean_content)
     return clean_content
 

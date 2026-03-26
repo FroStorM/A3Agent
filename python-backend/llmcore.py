@@ -1,112 +1,33 @@
 import os, json, re, time, requests, sys, threading, urllib3, base64, mimetypes
 from datetime import datetime
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
-
-def get_resource_path(relative_path):
-    try:
-        base_path = sys._MEIPASS
-    except Exception:
-        base_path = os.path.abspath(os.path.dirname(__file__))
-    return os.path.join(base_path, relative_path)
-
-def _default_app_root_dir():
-    app_name = os.environ.get("GA_APP_NAME") or "GenericAgent"
-    home = os.path.expanduser("~")
-    if sys.platform == "darwin":
-        root = os.path.join(home, "Library", "Application Support", app_name)
-    elif os.name == "nt":
-        base = os.environ.get("APPDATA") or os.path.join(home, "AppData", "Roaming")
-        root = os.path.join(base, app_name)
-    else:
-        base = os.environ.get("XDG_DATA_HOME") or os.path.join(home, ".local", "share")
-        root = os.path.join(base, app_name)
-    os.makedirs(root, exist_ok=True)
-    return root
-
-def _default_workspace_dir():
-    root = os.environ.get("GA_APP_DATA_DIR") or _default_app_root_dir()
-    os.environ.setdefault("GA_APP_DATA_DIR", root)
-    ws = os.path.join(root, "workspace")
-    os.makedirs(ws, exist_ok=True)
-    return ws
-
-def _config_dir_name():
-    name = os.environ.get("GA_CONFIG_DIRNAME")
-    if isinstance(name, str) and name:
-        return name
-    return "ga_config"
-
-def _normalize_workspace_root(path):
-    if not isinstance(path, str) or not path:
-        return None
-    root = os.path.abspath(path)
-    cfg_name = _config_dir_name()
-    if os.path.basename(root) == cfg_name:
-        root = os.path.dirname(root)
-    return root
-
-def _workspace_config_dir(root):
-    root = _normalize_workspace_root(root)
-    if not root:
-        root = _default_workspace_dir()
-    cfg = os.path.join(root, _config_dir_name())
-    os.makedirs(cfg, exist_ok=True)
-    return cfg
+from path_utils import backend_dir, mykey_candidate_paths, resource_path, temp_dir
 
 def _load_mykeys():
-    import json
-    base = os.environ.get("GA_USER_DATA_DIR")
-    if isinstance(base, str) and base:
-        base = _workspace_config_dir(base)
-    else:
-        root = _normalize_workspace_root(os.environ.get("GA_WORKSPACE_ROOT"))
-        if not (isinstance(root, str) and root):
-            root = _default_workspace_dir()
-        os.makedirs(root, exist_ok=True)
-        os.environ.setdefault("GA_WORKSPACE_ROOT", root)
-        base = _workspace_config_dir(root)
-        os.environ["GA_USER_DATA_DIR"] = base
-    os.makedirs(base, exist_ok=True)
-
-    candidates = [
-        os.path.join(base, "mykey.json"),
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "mykey.json"),
-    ]
-    ga_base = os.environ.get("GA_BASE_DIR")
-    if isinstance(ga_base, str) and ga_base:
-        candidates.append(os.path.join(ga_base, "mykey.json"))
-    for p in candidates:
+    for p in mykey_candidate_paths():
         if os.path.exists(p):
             try:
                 with open(p, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                return {k: v for k, v in data.items() if not k.startswith('_')}
+                    if str(p).endswith(".json"):
+                        data = json.load(f)
+                        if isinstance(data, dict) and data:
+                            return {k: v for k, v in data.items() if not k.startswith('_')}
+                        # empty json is treated as "not found" so legacy config can still be used
+                        continue
+                    else:
+                        import importlib.util, uuid
+                        mod_name = f"_mykey_runtime_{uuid.uuid4().hex}"
+                        spec = importlib.util.spec_from_file_location(mod_name, p)
+                        if spec and spec.loader:
+                            module = importlib.util.module_from_spec(spec)
+                            spec.loader.exec_module(module)
+                            data = {k: v for k, v in vars(module).items() if not k.startswith('_')}
+                            if data:
+                                return data
+                            continue
             except Exception as e:
-                print(f"[WARN] failed to parse {p}: {e}")
+                print(f"[WARN] failed to load {p}: {e}")
 
-    try:
-        resource_path = get_resource_path("mykey.json")
-        if os.path.exists(resource_path):
-            with open(resource_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            return {k: v for k, v in data.items() if not k.startswith('_')}
-    except Exception as e:
-        print(f"[WARN] failed to load mykey.json from bundled resources: {e}")
-
-    mykey_py = os.path.join(base, "mykey.py")
-    if os.path.exists(mykey_py):
-        try:
-            import importlib.util, uuid
-            mod_name = f"_mykey_runtime_{uuid.uuid4().hex}"
-            spec = importlib.util.spec_from_file_location(mod_name, mykey_py)
-            if spec and spec.loader:
-                module = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(module)
-                return {k: v for k, v in vars(module).items() if not k.startswith('_')}
-        except Exception as e:
-            print(f"[WARN] load mykey.py failed: {e}")
-            
     try:
         import mykey; return {k: v for k, v in vars(mykey).items() if not k.startswith('_')}
     except ImportError: pass
@@ -519,13 +440,15 @@ class ToolClient:
         self.last_tools = ''
         self.total_cd_tokens = 0
 
+    def _model_response_log_path(self):
+        return temp_dir(root=backend_dir()).joinpath(f"model_responses_{os.getpid()}.txt")
+
     def chat(self, messages, tools=None):
         if self._should_use_structured_messages(messages):
             return (yield from self._chat_structured(messages, tools))
         full_prompt = self._build_protocol_prompt(messages, tools)      
         print("Full prompt length:", len(full_prompt), 'chars')
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        with open(os.path.join(script_dir, f'./temp/model_responses_{os.getpid()}.txt'), 'a', encoding='utf-8', errors="replace") as f:
+        with open(self._model_response_log_path(), 'a', encoding='utf-8', errors="replace") as f:
             f.write(f"=== Prompt === {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n{full_prompt}\n")
         gen = self.backend.ask(full_prompt, stream=True)
         raw_text = ''; summarytag = '[NextWillSummary]'
@@ -535,8 +458,7 @@ class ToolClient:
         print('Complete response received.')
         if raw_text.endswith(summarytag):
             self.last_tools = ''; raw_text = raw_text[:-len(summarytag)]
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        with open(os.path.join(script_dir, f'./temp/model_responses_{os.getpid()}.txt'), 'a', encoding='utf-8', errors="replace") as f:
+        with open(self._model_response_log_path(), 'a', encoding='utf-8', errors="replace") as f:
             f.write(f"=== Response === {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n{raw_text}\n\n")
         return self._parse_mixed_response(raw_text)
 
@@ -616,8 +538,7 @@ class ToolClient:
     def _chat_structured(self, messages, tools):
         backend_messages = self._build_backend_messages(messages, tools)
         print("Structured prompt length:", sum(self._estimate_content_len(m.get("content")) for m in backend_messages), 'chars')
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        with open(os.path.join(script_dir, f'./temp/model_responses_{os.getpid()}.txt'), 'a', encoding='utf-8', errors="replace") as f:
+        with open(self._model_response_log_path(), 'a', encoding='utf-8', errors="replace") as f:
             f.write(f"=== Prompt === {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n{self._serialize_messages_for_log(backend_messages)}\n")
         gen = self.backend.raw_ask(backend_messages)
         raw_text = ''; summarytag = '[NextWillSummary]'
@@ -627,7 +548,7 @@ class ToolClient:
         print('Complete response received.')
         if raw_text.endswith(summarytag):
             self.last_tools = ''; raw_text = raw_text[:-len(summarytag)]
-        with open(os.path.join(script_dir, f'./temp/model_responses_{os.getpid()}.txt'), 'a', encoding='utf-8', errors="replace") as f:
+        with open(self._model_response_log_path(), 'a', encoding='utf-8', errors="replace") as f:
             f.write(f"=== Response === {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n{raw_text}\n\n")
         return self._parse_mixed_response(raw_text)
 

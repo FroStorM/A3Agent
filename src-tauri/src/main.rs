@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    ga_solo_lib::run()
+    a3agent_lib::run()
 }

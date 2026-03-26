@@ -404,7 +404,7 @@ pip install xai-sdk
 ### 开发模式
 
 ```bash
-cd GA-SOLO
+cd A3Agent
 npm install
 npm run tauri dev
 ```

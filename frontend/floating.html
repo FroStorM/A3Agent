@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>GenericAgent</title>
+    <title>A3Agent</title>
     <style>
       html,
       body {
@@ -122,8 +122,8 @@
   </head>
   <body>
     <div class="drag">
-      <button id="toggle" type="button" aria-label="GenericAgent">
-        <img alt="GA" src="logo-transparent.png" />
+      <button id="toggle" type="button" aria-label="A3Agent">
+        <img alt="A3Agent" src="logo-transparent.png" />
       </button>
     </div>
     <script>
@@ -140,18 +140,20 @@
       const applyStatus = (payload) => {
         const explicitState = payload?.state ? String(payload.state) : "";
         const uiState = payload?.ui_state ? String(payload.ui_state) : "";
+        const isRunning = !!payload?.is_running;
+        const needsHuman = !!payload?.needs_human_input;
         const resolved = explicitState || uiState;
         if (payload?.agent_init_error || resolved === "error") {
           latchState("error", 0);
           document.documentElement.dataset.state = "error";
           return;
         }
-        if (resolved === "need-user") {
+        if (resolved === "need-user" || needsHuman) {
           latchState("need-user", 0);
           document.documentElement.dataset.state = "need-user";
           return;
         }
-        if (resolved === "running") {
+        if (resolved === "running" || isRunning) {
           latchState("running", 7000);
           document.documentElement.dataset.state = "running";
           return;
@@ -167,16 +169,6 @@
         }
         if (latchedUntil && Date.now() > latchedUntil) {
           latchState("", 0);
-        }
-        if (payload?.needs_human_input) {
-          latchState("need-user", 0);
-          document.documentElement.dataset.state = "need-user";
-          return;
-        }
-        if (payload?.is_running) {
-          latchState("running", 7000);
-          document.documentElement.dataset.state = "running";
-          return;
         }
         latchState("", 0);
         document.documentElement.dataset.state = "idle";

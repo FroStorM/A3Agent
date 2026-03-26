@@ -205,7 +205,7 @@ pub fn run() {
                 tauri::tray::TrayIconBuilder::new()
                     .menu(&menu)
                     .icon(icon)
-                    .tooltip("GA")
+                    .tooltip("A3Agent")
                     .on_menu_event(move |app, event| {
                         if event.id().as_ref() == "quit" {
                             app.exit(0);
@@ -225,7 +225,7 @@ pub fn run() {
                     "floating",
                     tauri::WebviewUrl::App("floating.html".into()),
                 )
-                .title("GA")
+                .title("A3Agent")
                 .transparent(true)
                 .decorations(false)
                 .always_on_top(true)

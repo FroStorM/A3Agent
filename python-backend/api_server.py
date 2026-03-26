@@ -17,17 +17,21 @@ import importlib
 import importlib.util
 import re
 import uuid
+from path_utils import (
+    app_data_dir,
+    config_dir_name,
+    ensure_dir,
+    normalize_workspace_root,
+    resolve_mykey_path,
+    resource_dir,
+    resource_path,
+    workspace_config_dir,
+    workspace_history_path,
+    workspace_root_dir,
+)
 
-BASE_DIR = os.environ.get("GA_BASE_DIR") or os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = str(resource_dir())
 sys.path.append(BASE_DIR)
-
-
-def get_resource_path(relative_path):
-    try:
-        base_path = sys._MEIPASS
-    except Exception:
-        base_path = os.path.abspath(os.path.dirname(__file__))
-    return os.path.join(base_path, relative_path)
 
 def resolve_frontend_dir():
     env_dir = os.environ.get("GA_FRONTEND_DIR")
@@ -49,16 +53,30 @@ def resolve_frontend_dir():
 
 app = FastAPI()
 API_LOG = "/tmp/generic-agent-api.log"
+STREAM_DEBUG_LOG = "/tmp/generic-agent-stream-debug.log"
+
+
+def _debug_log(kind, **fields):
+    try:
+        payload = {
+            "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "kind": kind,
+        }
+        for key, value in fields.items():
+            if value is None:
+                continue
+            payload[key] = value
+        line = json.dumps(payload, ensure_ascii=False, default=str)
+        print(f"[StreamDebug] {line}")
+        with open(STREAM_DEBUG_LOG, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
 
 def _ensure_default_mykey(base):
     try:
-        base = os.path.abspath(base)
-        dst = os.path.join(base, "mykey.json")
-        if os.path.exists(dst):
+        if resolve_mykey_path(base, prefer_existing=True):
             return
-        data = {}
-        with open(dst, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception:
         return
 
@@ -72,96 +90,6 @@ async def add_frontend_no_cache_headers(request: Request, call_next):
     except Exception:
         pass
     return response
-
-def _default_app_root_dir():
-    app_name = os.environ.get("GA_APP_NAME") or "GenericAgent"
-    home = os.path.expanduser("~")
-    if sys.platform == "darwin":
-        root = os.path.join(home, "Library", "Application Support", app_name)
-    elif os.name == "nt":
-        base = os.environ.get("APPDATA") or os.path.join(home, "AppData", "Roaming")
-        root = os.path.join(base, app_name)
-    else:
-        base = os.environ.get("XDG_DATA_HOME") or os.path.join(home, ".local", "share")
-        root = os.path.join(base, app_name)
-    os.makedirs(root, exist_ok=True)
-    return root
-
-def _default_workspace_dir():
-    root = os.environ.get("GA_APP_DATA_DIR") or _default_app_root_dir()
-    os.environ.setdefault("GA_APP_DATA_DIR", root)
-    ws = os.path.join(root, "workspace")
-    os.makedirs(ws, exist_ok=True)
-    return ws
-
-def _config_dir_name():
-    name = os.environ.get("GA_CONFIG_DIRNAME")
-    if isinstance(name, str) and name:
-        return name
-    return "ga_config"
-
-def _try_mkdir(path):
-    try:
-        os.makedirs(path, exist_ok=True)
-        return True
-    except Exception:
-        return False
-
-def _normalize_workspace_root(path):
-    if not isinstance(path, str) or not path:
-        return None
-    root = os.path.abspath(path)
-    cfg_name = _config_dir_name()
-    if os.path.basename(root) == cfg_name:
-        root = os.path.dirname(root)
-    return root
-
-def _workspace_config_dir(root):
-    root = _normalize_workspace_root(root)
-    if not root:
-        root = _default_workspace_dir()
-    cfg = os.path.join(root, _config_dir_name())
-    os.makedirs(cfg, exist_ok=True)
-    return cfg
-
-def get_workspace_root_dir():
-    if hasattr(app, "current_workspace") and app.current_workspace:
-        root = _normalize_workspace_root(app.current_workspace)
-        _try_mkdir(root)
-        os.environ.setdefault("GA_WORKSPACE_ROOT", root)
-        return root
-
-    root = _normalize_workspace_root(os.environ.get("GA_WORKSPACE_ROOT"))
-    if isinstance(root, str) and root:
-        _try_mkdir(root)
-        return root
-
-    root = _normalize_workspace_root(os.environ.get("GA_USER_DATA_DIR"))
-    if isinstance(root, str) and root:
-        _try_mkdir(root)
-        os.environ.setdefault("GA_WORKSPACE_ROOT", root)
-        return root
-
-    root = _default_workspace_dir()
-    os.environ.setdefault("GA_WORKSPACE_ROOT", root)
-    return root
-
-def get_user_data_dir():
-    root = get_workspace_root_dir()
-    cfg = _workspace_config_dir(root)
-    os.environ["GA_WORKSPACE_ROOT"] = root
-    os.environ["GA_USER_DATA_DIR"] = cfg
-    return cfg
-
-def _get_app_data_dir():
-    root = os.environ.get("GA_APP_DATA_DIR")
-    if isinstance(root, str) and root:
-        os.makedirs(root, exist_ok=True)
-        return root
-    return _default_app_root_dir()
-
-def _workspace_history_path():
-    return os.path.join(_get_app_data_dir(), "workspace_history.json")
 
 def _read_workspace_history():
     path = _workspace_history_path()
@@ -196,6 +124,46 @@ def _add_workspace_history(path):
     items = items[:30]
     _write_workspace_history(items)
 
+
+def get_workspace_root_dir():
+    if hasattr(app, "current_workspace") and app.current_workspace:
+        root = normalize_workspace_root(app.current_workspace)
+        if root is not None:
+            root = ensure_dir(root)
+            os.environ.setdefault("GA_WORKSPACE_ROOT", str(root))
+            return str(root)
+
+    root = normalize_workspace_root(os.environ.get("GA_WORKSPACE_ROOT"))
+    if root is not None:
+        root = ensure_dir(root)
+        return str(root)
+
+    root = normalize_workspace_root(os.environ.get("GA_USER_DATA_DIR"))
+    if root is not None:
+        root = ensure_dir(root)
+        os.environ.setdefault("GA_WORKSPACE_ROOT", str(root))
+        return str(root)
+
+    root = workspace_root_dir()
+    os.environ.setdefault("GA_WORKSPACE_ROOT", str(root))
+    return str(root)
+
+
+def get_user_data_dir():
+    root = get_workspace_root_dir()
+    cfg = workspace_config_dir(root)
+    os.environ["GA_WORKSPACE_ROOT"] = root
+    os.environ["GA_USER_DATA_DIR"] = str(cfg)
+    return str(cfg)
+
+
+def _get_app_data_dir():
+    return str(app_data_dir())
+
+
+def _workspace_history_path():
+    return str(workspace_history_path())
+
 def _find_sop_src_root():
     candidates = []
     env_dir = os.environ.get("GA_SOP_SRC_DIR")
@@ -205,7 +173,7 @@ def _find_sop_src_root():
         os.path.join(BASE_DIR, "memory"),
     ])
     try:
-        candidates.append(get_resource_path("memory"))
+        candidates.append(str(resource_path("memory")))
     except Exception:
         pass
 
@@ -253,10 +221,20 @@ try:
 except Exception:
     pass
 
+
+@app.on_event("startup")
+async def _log_startup():
+    _debug_log(
+        "startup",
+        base_dir=BASE_DIR,
+        frontend_dir=resolve_frontend_dir(),
+        pid=os.getpid(),
+    )
+
 @app.post("/api/workspace/set")
 async def set_workspace(request: Request):
     data = await request.json()
-    path = _normalize_workspace_root(data.get("path"))
+    path = normalize_workspace_root(data.get("path"))
     if not path or not os.path.isdir(path):
         return JSONResponse(status_code=400, content={"error": "Invalid directory path"})
     if "GA_APP_DATA_DIR" not in os.environ:
@@ -321,12 +299,14 @@ def get_workspace_options():
                 if not os.path.isdir(fp):
                     continue
                 low = name.lower()
-                cfg = os.path.join(fp, _config_dir_name())
+                cfg = os.path.join(fp, config_dir_name())
                 if (
                     "ga" in low
                     or os.path.exists(os.path.join(fp, "mykey.json"))
+                    or os.path.exists(os.path.join(fp, "mykey.py"))
                     or os.path.isdir(os.path.join(fp, "memory"))
                     or os.path.exists(os.path.join(cfg, "mykey.json"))
+                    or os.path.exists(os.path.join(cfg, "mykey.py"))
                     or os.path.isdir(os.path.join(cfg, "memory"))
                 ):
                     picked.append(os.path.abspath(fp))
@@ -391,9 +371,16 @@ def _write_text(path, content):
 import json
 
 def _load_mykey_module_from_path(path):
-    if not os.path.exists(path):
+    if not path or not os.path.exists(path):
         return {}
     try:
+        if str(path).endswith(".py"):
+            spec = importlib.util.spec_from_file_location(f"_mykey_api_{uuid.uuid4().hex}", path)
+            if not spec or not spec.loader:
+                return {}
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return {k: v for k, v in vars(module).items() if not k.startswith("_")}
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception as e:
@@ -515,7 +502,7 @@ class StreamManager:
 stream_manager = StreamManager()
 
 # Helper to bridge Agent Queue to Stream Manager
-def process_agent_output(display_queue, source="user", prompt_text=None, run_id=None, cancel_event=None):
+def process_agent_output(display_queue, source="user", prompt_text=None, run_id=None, cancel_event=None, request_id=None):
     finished_normally = False
     def broadcast_state(state_name, reason=""):
         payload = {
@@ -523,30 +510,36 @@ def process_agent_output(display_queue, source="user", prompt_text=None, run_id=
             "state": state_name,
             "source": source,
             "run_id": run_id,
+            "request_id": request_id,
         }
         if reason:
             payload["reason"] = reason
         state.ui_state = state_name
         print(f"[Status] broadcast state={state_name} source={source} run_id={run_id} reason={reason}")
+        _debug_log("state", state=state_name, source=source, run_id=run_id, request_id=request_id, reason=reason)
         stream_manager.broadcast(json.dumps(payload))
 
     # If we have the prompt text (e.g. for autonomous), broadcast it as a user message first
     # This ensures the UI shows what triggered the action
     if prompt_text:
+        _debug_log("message", phase="prompt", source=source, run_id=run_id, request_id=request_id, prompt_len=len(prompt_text))
         stream_manager.broadcast(json.dumps({
             'type': 'message', 
             'role': 'user', 
             'content': prompt_text,
             'source': source,
             'run_id': run_id,
+            'request_id': request_id,
             'timestamp': time.strftime('%H:%M:%S')
         }))
 
     # Notify start of assistant response
+    _debug_log("start", source=source, run_id=run_id, request_id=request_id, has_prompt=bool(prompt_text))
     stream_manager.broadcast(json.dumps({
         'type': 'start', 
         'source': source,
         'run_id': run_id
+        , 'request_id': request_id
     }))
     broadcast_state("running", "stream start")
     try:
@@ -566,17 +559,19 @@ def process_agent_output(display_queue, source="user", prompt_text=None, run_id=
                 continue
             if 'next' in item:
                 if cancel_event is None or not cancel_event.is_set():
+                    chunk_text = item.get('next', '')
+                    _debug_log("chunk", source=source, run_id=run_id, request_id=request_id, chunk_len=len(chunk_text), preview=str(chunk_text)[:120])
                     stream_manager.broadcast(json.dumps({
                         'type': 'chunk', 
-                        'content': item['next'],
+                        'content': chunk_text,
                         'source': source,
-                        'run_id': run_id
+                        'run_id': run_id,
+                        'request_id': request_id
                     }))
-                    if _looks_like_human_request(item.get('next', '')):
-                        broadcast_state("need-user", "chunk suggests human input")
             if 'done' in item:
                 if cancel_event is None or not cancel_event.is_set():
                     done_text = item.get('done', '')
+                    _debug_log("done", source=source, run_id=run_id, request_id=request_id, done_len=len(done_text), human_like=_looks_like_human_request(done_text))
                     if _looks_like_human_request(done_text):
                         state.set_human_input(item.get('done', ''), [])
                         broadcast_state("need-user", "done suggests human input")
@@ -587,7 +582,8 @@ def process_agent_output(display_queue, source="user", prompt_text=None, run_id=
                         'type': 'done', 
                         'content': item['done'],
                         'source': source,
-                        'run_id': run_id
+                        'run_id': run_id,
+                        'request_id': request_id
                     }))
                 break
     finally:
@@ -614,6 +610,7 @@ class AppState:
         self.run_lock = threading.Lock()
         self.active_runs = {}
         self.ui_state = "idle"
+        self.stopping = False
 
     def new_run(self):
         run_id = uuid.uuid4().hex
@@ -840,6 +837,7 @@ def get_history():
 async def stream(request: Request):
     async def event_generator():
         q = stream_manager.add_queue()
+        _debug_log("stream_connect", client=str(id(q)), queues=len(stream_manager.queues))
         try:
             while True:
                 # Poll the queue (non-blocking in thread, blocking in async)
@@ -848,12 +846,25 @@ async def stream(request: Request):
                     # Get all available messages
                     while not q.empty():
                         msg = q.get_nowait()
+                        try:
+                            parsed = json.loads(msg)
+                            _debug_log(
+                                "stream_emit",
+                                client=str(id(q)),
+                                type=parsed.get("type"),
+                                state=parsed.get("state"),
+                                run_id=parsed.get("run_id"),
+                                content_len=len(str(parsed.get("content", ""))) if "content" in parsed else None,
+                            )
+                        except Exception:
+                            _debug_log("stream_emit", client=str(id(q)), raw_preview=str(msg)[:120])
                         yield f"data: {msg}\n\n"
                     await asyncio.sleep(0.1)
                 except Exception:
                     await asyncio.sleep(0.1)
         except asyncio.CancelledError:
             stream_manager.remove_queue(q)
+            _debug_log("stream_disconnect", client=str(id(q)), queues=len(stream_manager.queues))
             print("Client disconnected from stream")
         finally:
             stream_manager.remove_queue(q)
@@ -864,11 +875,16 @@ async def stream(request: Request):
 async def chat(request: Request):
     if state.agent_init_error:
         return {"error": f"Agent init failed: {state.agent_init_error}"}
+    t0 = time.time()
+    while state.stopping and time.time() - t0 < 5:
+        await asyncio.sleep(0.05)
     state.clear_human_input()
     data = await request.json()
     prompt = data.get("prompt")
+    request_id = data.get("request_id")
     if not prompt:
         return {"error": "No prompt provided"}
+    _debug_log("chat_received", prompt_len=len(prompt), request_id=request_id, stopping=state.stopping, is_running=getattr(state.agent, "is_running", False))
     
     # Update activity time
     state.last_activity_time = time.time()
@@ -876,13 +892,14 @@ async def chat(request: Request):
     # Put task into agent's queue
     display_queue = state.agent.put_task(prompt, source="user")
     run_id, cancel_event = state.new_run()
+    _debug_log("chat_queued", run_id=run_id, request_id=request_id, prompt_len=len(prompt), stopping=state.stopping, is_running=getattr(state.agent, "is_running", False))
     
     # Start background task to broadcast output
     # Note: We pass prompt_text=prompt so it gets broadcasted back to all clients (including sender)
     # This simplifies frontend logic (just listen to stream)
-    threading.Thread(target=process_agent_output, args=(display_queue, "user", prompt, run_id, cancel_event), daemon=True).start()
+    threading.Thread(target=process_agent_output, args=(display_queue, "user", prompt, run_id, cancel_event, request_id), daemon=True).start()
     
-    return {"status": "queued", "run_id": run_id}
+    return {"status": "queued", "run_id": run_id, "request_id": request_id}
 
 @app.post("/api/control")
 async def control(request: Request):
@@ -895,26 +912,33 @@ async def control(request: Request):
     state.last_activity_time = time.time()
     
     if action == "stop":
-        run_ids = data.get("run_ids")
-        if isinstance(run_ids, list) and run_ids:
-            canceled = state.cancel_runs(run_ids)
-        else:
-            canceled = state.cancel_runs(None)
-        state.agent.abort()
-        t0 = time.time()
-        while time.time() - t0 < 1.5:
-            if not getattr(state.agent, "is_running", False):
-                break
-            time.sleep(0.05)
-        if getattr(state.agent, "is_running", False):
-            old = state.agent
-            state.agent, state.agent_init_error = init_agent()
-            try:
-                old.abort()
-            except Exception:
-                pass
-            return {"status": "stopped", "forced_restart": True, "agent_init_error": state.agent_init_error, "canceled_run_ids": canceled}
-        return {"status": "stopped", "forced_restart": False, "canceled_run_ids": canceled}
+        state.stopping = True
+        _debug_log("stop_received", run_ids=data.get("run_ids"), is_running=getattr(state.agent, "is_running", False))
+        try:
+            run_ids = data.get("run_ids")
+            if isinstance(run_ids, list) and run_ids:
+                canceled = state.cancel_runs(run_ids)
+            else:
+                canceled = state.cancel_runs(None)
+            state.agent.abort()
+            t0 = time.time()
+            while time.time() - t0 < 1.5:
+                if not getattr(state.agent, "is_running", False):
+                    break
+                time.sleep(0.05)
+            if getattr(state.agent, "is_running", False):
+                old = state.agent
+                state.agent, state.agent_init_error = init_agent()
+                try:
+                    old.abort()
+                except Exception:
+                    pass
+                _debug_log("stop_forced_restart", canceled_run_ids=canceled, agent_init_error=state.agent_init_error)
+                return {"status": "stopped", "forced_restart": True, "agent_init_error": state.agent_init_error, "canceled_run_ids": canceled}
+            _debug_log("stop_completed", forced_restart=False, canceled_run_ids=canceled)
+            return {"status": "stopped", "forced_restart": False, "canceled_run_ids": canceled}
+        finally:
+            state.stopping = False
     elif action == "switch_llm":
         idx = data.get("index")
         if idx is not None:
@@ -967,10 +991,8 @@ async def control(request: Request):
 @app.get("/api/config/mykey")
 def get_mykey():
     base = get_user_data_dir()
-    path = os.path.join(base, "mykey.json")
-    if os.path.exists(path):
-        return {"exists": True}
-    return {"exists": False}
+    path = resolve_mykey_path(base, prefer_existing=True)
+    return {"exists": bool(path and os.path.exists(path)), "path": str(path) if path else ""}
 
 @app.post("/api/config/mykey")
 async def save_mykey(request: Request):
@@ -979,14 +1001,14 @@ async def save_mykey(request: Request):
     if not isinstance(content, str):
         return JSONResponse(status_code=400, content={"error": "content must be string"})
     base = get_user_data_dir()
-    path = os.path.join(base, "mykey.json")
+    path = resolve_mykey_path(base, prefer_existing=False)
     _write_text(path, content)
     return {"status": "saved"}
 
 @app.get("/api/llm_configs")
 def list_llm_configs():
     base = get_user_data_dir()
-    path = os.path.join(base, "mykey.json")
+    path = resolve_mykey_path(base, prefer_existing=True)
     module = _load_mykey_module_from_path(path)
     configs = _extract_llm_configs_from_module(module)
     return {"configs": configs}
@@ -1021,7 +1043,7 @@ async def test_llm_config(request: Request):
     if cid and not apikey:
         try:
             base = get_user_data_dir()
-            path = os.path.join(base, "mykey.json")
+            path = resolve_mykey_path(base, prefer_existing=True)
             module = _load_mykey_module_from_path(path)
             v = module.get(cid)
             if isinstance(v, dict):
@@ -1078,7 +1100,7 @@ async def upsert_llm_config(request: Request):
 
     try:
         base = get_user_data_dir()
-        path = os.path.join(base, "mykey.json")
+        path = resolve_mykey_path(base, prefer_existing=False)
         module = _load_mykey_module_from_path(path)
         order, values = _read_mykey_simple_assignments(module)
         existing_ids = set()
@@ -1142,7 +1164,7 @@ async def delete_llm_config(request: Request):
     if not isinstance(cid, str) or not cid:
         return JSONResponse(status_code=400, content={"error": "id required"})
     base = get_user_data_dir()
-    path = os.path.join(base, "mykey.json")
+    path = resolve_mykey_path(base, prefer_existing=False)
     module = _load_mykey_module_from_path(path)
     order, values = _read_mykey_simple_assignments(module)
     if cid in values:
