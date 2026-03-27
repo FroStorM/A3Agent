@@ -21,6 +21,7 @@ from path_utils import (
     app_data_dir,
     config_dir_name,
     ensure_dir,
+    app_root_dir,
     normalize_workspace_root,
     resolve_mykey_path,
     resource_dir,
@@ -52,8 +53,8 @@ def resolve_frontend_dir():
     return None
 
 app = FastAPI()
-API_LOG = "/tmp/generic-agent-api.log"
-STREAM_DEBUG_LOG = "/tmp/generic-agent-stream-debug.log"
+API_LOG = "/tmp/a3agent-api.log"
+STREAM_DEBUG_LOG = "/tmp/a3agent-stream-debug.log"
 
 
 def _debug_log(kind, **fields):
@@ -73,12 +74,77 @@ def _debug_log(kind, **fields):
     except Exception:
         pass
 
+def _should_copy_file(src, dst, overwrite_if_source_newer=False):
+    try:
+        if not os.path.isfile(dst):
+            return True
+        if os.path.getsize(dst) <= 0:
+            return True
+        if not overwrite_if_source_newer:
+            return False
+        return os.path.getmtime(src) > os.path.getmtime(dst)
+    except Exception:
+        return True
+
+
+def _resolve_ga_config_target(base):
+    base = os.path.abspath(base)
+    if os.path.basename(base) == config_dir_name():
+        return base
+    return os.path.join(base, config_dir_name())
+
+
+def _find_bundled_mykey_sources():
+    source_root = _find_ga_config_src_root()
+    if not source_root:
+        return []
+    sources = []
+    for name in ("mykey.json", "mykey.py"):
+        src = os.path.join(source_root, name)
+        if os.path.isfile(src):
+            sources.append(src)
+    return sources
+
+
 def _ensure_default_mykey(base):
     try:
-        if resolve_mykey_path(base, prefer_existing=True):
+        target_root = _resolve_ga_config_target(base)
+        bundled_sources = _find_bundled_mykey_sources()
+        if not bundled_sources:
             return
+        os.makedirs(target_root, exist_ok=True)
+        newest_source_mtime = max(os.path.getmtime(src) for src in bundled_sources)
+        for name in ("mykey.json", "mykey.py"):
+            dst = os.path.join(target_root, name)
+            if not os.path.isfile(dst):
+                continue
+            try:
+                if os.path.getsize(dst) <= 0 or os.path.getmtime(dst) < newest_source_mtime:
+                    os.remove(dst)
+            except Exception:
+                pass
+        for src in bundled_sources:
+            dst = os.path.join(target_root, os.path.basename(src))
+            if _should_copy_file(src, dst, overwrite_if_source_newer=True):
+                shutil.copy2(src, dst)
+        resolve_mykey_path(target_root, prefer_existing=True)
     except Exception:
         return
+
+
+def _migrate_legacy_ga_config(target_root):
+    legacy_root = os.path.join(target_root, config_dir_name())
+    if not os.path.isdir(legacy_root):
+        return
+    memory_src = os.path.join(legacy_root, "memory")
+    if os.path.isdir(memory_src):
+        _copy_tree_defaults(memory_src, os.path.join(target_root, "memory"), overwrite_if_source_newer=True)
+    for name in ("mykey.json", "mykey.py"):
+        src = os.path.join(legacy_root, name)
+        dst = os.path.join(target_root, name)
+        if os.path.isfile(src) and _should_copy_file(src, dst, overwrite_if_source_newer=True):
+            shutil.copy2(src, dst)
+    shutil.rmtree(legacy_root, ignore_errors=True)
 
 @app.middleware("http")
 async def add_frontend_no_cache_headers(request: Request, call_next):
@@ -191,32 +257,77 @@ def _find_sop_src_root():
             continue
     return None
 
+def _iter_copyable_files(root):
+    root = os.path.abspath(root)
+    for cur_root, dirs, files in os.walk(root):
+        dirs[:] = [d for d in dirs if isinstance(d, str) and d not in ("__pycache__",) and not d.startswith(".")]
+        for f in files:
+            if not isinstance(f, str) or f.startswith(".") or f.endswith(".pyc"):
+                continue
+            yield cur_root, f
+
+def _copy_tree_defaults(source_root, dest_root, overwrite_if_source_newer=False):
+    if not source_root or not dest_root:
+        return
+    source_root = os.path.abspath(source_root)
+    dest_root = os.path.abspath(dest_root)
+    if source_root == dest_root or not os.path.isdir(source_root):
+        return
+    os.makedirs(dest_root, exist_ok=True)
+    for cur_root, filename in _iter_copyable_files(source_root):
+        rel = os.path.relpath(cur_root, source_root)
+        target_dir = dest_root if rel == "." else os.path.join(dest_root, rel)
+        os.makedirs(target_dir, exist_ok=True)
+        src = os.path.join(cur_root, filename)
+        dst = os.path.join(target_dir, filename)
+        if not _should_copy_file(src, dst, overwrite_if_source_newer=overwrite_if_source_newer):
+            continue
+        shutil.copy2(src, dst)
+
+def _find_ga_config_src_root():
+    candidates = []
+    env_dir = os.environ.get("GA_CONFIG_SRC_DIR")
+    if isinstance(env_dir, str) and env_dir:
+        candidates.append(env_dir)
+    candidates.extend([
+        os.path.join(BASE_DIR, "ga_config"),
+        os.path.join(BASE_DIR, "..", "ga_config"),
+        os.path.join(BASE_DIR, "..", "..", "ga_config"),
+    ])
+    try:
+        candidates.append(str(resource_path("ga_config")))
+    except Exception:
+        pass
+
+    seen = set()
+    for p in candidates:
+        try:
+            ap = os.path.abspath(p)
+        except Exception:
+            continue
+        if ap in seen:
+            continue
+        seen.add(ap)
+        if os.path.isdir(ap) and os.path.isdir(os.path.join(ap, "memory")):
+            return ap
+    return None
+
+def _ensure_default_ga_config(base):
+    source_root = _find_ga_config_src_root()
+    if source_root:
+        target = _resolve_ga_config_target(base)
+        _migrate_legacy_ga_config(target)
+        _copy_tree_defaults(source_root, target)
+
 def _ensure_default_sops(base):
     try:
-        base = os.path.abspath(base)
-        dest_root = os.path.join(base, "memory")
-        os.makedirs(dest_root, exist_ok=True)
-        src_root = _find_sop_src_root()
-        if not src_root:
-            return
-        for root, dirs, files in os.walk(src_root):
-            dirs[:] = [d for d in dirs if isinstance(d, str) and d not in ("__pycache__",) and not d.startswith(".")]
-            rel = os.path.relpath(root, src_root)
-            dest_dir = dest_root if rel == "." else os.path.join(dest_root, rel)
-            os.makedirs(dest_dir, exist_ok=True)
-            for f in files:
-                if not isinstance(f, str) or f.startswith(".") or f.endswith(".pyc") or not f.endswith(".md"):
-                    continue
-                src = os.path.join(root, f)
-                dst = os.path.join(dest_dir, f)
-                if os.path.isfile(src) and not os.path.exists(dst):
-                    shutil.copyfile(src, dst)
+        _ensure_default_ga_config(base)
     except Exception:
         return
 
 try:
     _base = get_user_data_dir()
-    _ensure_default_sops(_base)
+    _ensure_default_ga_config(_base)
     _ensure_default_mykey(_base)
 except Exception:
     pass
@@ -224,6 +335,27 @@ except Exception:
 
 @app.on_event("startup")
 async def _log_startup():
+    try:
+        _ensure_default_ga_config(_base)
+        _ensure_default_mykey(_base)
+    except Exception:
+        pass
+    try:
+        _workspace_root = get_workspace_root_dir()
+        _app_root = str(app_root_dir())
+        print(
+            "[Startup] resolved data dir="
+            f"{_base} workspace_root={_workspace_root} app_root={_app_root}"
+        )
+        _debug_log(
+            "startup_data_dir",
+            resolved_data_dir=_base,
+            workspace_root=_workspace_root,
+            app_root=_app_root,
+            config_dir=config_dir_name(),
+        )
+    except Exception:
+        pass
     _debug_log(
         "startup",
         base_dir=BASE_DIR,
@@ -245,7 +377,7 @@ async def set_workspace(request: Request):
     os.environ["GA_WORKSPACE_ROOT"] = path
     cfg = get_user_data_dir()
     _add_workspace_history(path)
-    _ensure_default_sops(cfg)
+    _ensure_default_ga_config(cfg)
     _ensure_default_mykey(cfg)
     return {"status": "ok", "workspace": path}
 
@@ -253,7 +385,7 @@ async def set_workspace(request: Request):
 def get_workspace():
     root = get_workspace_root_dir()
     base = get_user_data_dir()
-    _ensure_default_sops(base)
+    _ensure_default_ga_config(base)
     _ensure_default_mykey(base)
     return {"workspace": root}
 
@@ -1196,7 +1328,7 @@ async def save_todo(request: Request):
 @app.get("/api/sop/list")
 def list_sops():
     base = get_user_data_dir()
-    _ensure_default_sops(base)
+    _ensure_default_ga_config(base)
     mem_dir = os.path.join(base, "memory")
     if not os.path.isdir(mem_dir):
         return {"files": []}
@@ -1223,7 +1355,7 @@ def read_sop(name: str):
     if not safe or not safe.endswith(".md"):
         return JSONResponse(status_code=400, content={"error": "invalid name"})
     base = get_user_data_dir()
-    _ensure_default_sops(base)
+    _ensure_default_ga_config(base)
     mem_dir = os.path.join(base, "memory")
     mem_dir_abs = os.path.abspath(mem_dir)
     path = os.path.abspath(os.path.join(mem_dir_abs, safe))
@@ -1244,7 +1376,7 @@ async def write_sop(request: Request):
     if not isinstance(content, str):
         return JSONResponse(status_code=400, content={"error": "content must be string"})
     base = get_user_data_dir()
-    _ensure_default_sops(base)
+    _ensure_default_ga_config(base)
     mem_dir = os.path.join(base, "memory")
     mem_dir_abs = os.path.abspath(mem_dir)
     path = os.path.abspath(os.path.join(mem_dir_abs, safe))

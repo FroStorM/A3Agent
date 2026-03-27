@@ -3,7 +3,40 @@ import sys
 from pathlib import Path
 
 
+def _bundle_resource_root(value):
+    if not value:
+        return None
+    raw = os.path.abspath(str(value))
+    marker = ".app/Contents/Resources/"
+    if marker in raw:
+        candidate = Path(raw.split(marker, 1)[0] + ".app/Contents/Resources")
+        if candidate.exists():
+            return candidate.resolve()
+    if ".zip/" in raw:
+        archive = Path(raw.split(".zip/", 1)[0] + ".zip")
+        if archive.exists():
+            if archive.parent.name == "lib" and archive.parent.parent.exists():
+                return archive.parent.parent.resolve()
+            return archive.parent.resolve()
+    candidate = Path(raw)
+    if candidate.suffix == ".zip" and candidate.exists():
+        if candidate.parent.name == "lib" and candidate.parent.parent.exists():
+            return candidate.parent.parent.resolve()
+        return candidate.parent.resolve()
+    try:
+        parents = (candidate,) + tuple(candidate.parents)
+    except Exception:
+        parents = (candidate,)
+    for parent in parents:
+        if parent.name == "Resources" and parent.parent.name == "Contents" and parent.parent.parent.suffix == ".app":
+            return parent.resolve()
+    return None
+
+
 def backend_dir():
+    bundled = _bundle_resource_root(__file__)
+    if bundled is not None:
+        return bundled
     return Path(__file__).resolve().parent
 
 
@@ -17,10 +50,14 @@ def resource_dir():
 
     root = os.environ.get("GA_BASE_DIR")
     if root:
-        root_path = Path(root)
-        if root_path.suffix == ".zip" and root_path.is_file():
-            return root_path.parent.parent.resolve()
-        return root_path.resolve()
+        bundled = _bundle_resource_root(root)
+        if bundled is not None:
+            return bundled
+        return Path(root).resolve()
+    for value in (__file__, sys.argv[0] if sys.argv else None, sys.executable):
+        bundled = _bundle_resource_root(value)
+        if bundled is not None:
+            return bundled
     return backend_dir()
 
 
@@ -32,7 +69,7 @@ def data_dir():
 
 
 def app_root_dir(app_name=None):
-    app_name = app_name or os.environ.get("GA_APP_NAME") or "Generic Agent"
+    app_name = app_name or os.environ.get("GA_APP_NAME") or "A3Agent"
     home = Path.home()
     if sys.platform == "darwin":
         root = home / "Library" / "Application Support" / app_name

@@ -1435,3 +1435,5 @@ createApp({
          };
      }
 }).mount('#app');
+window.__A3_APP_READY__ = true;
+document.documentElement.classList.add('js-ready');

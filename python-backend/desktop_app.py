@@ -1,5 +1,6 @@
 import sys
 import os
+import asyncio
 import shutil
 import threading
 import time
@@ -15,12 +16,12 @@ import socket
 import traceback
 from datetime import datetime
 import uvicorn
-from path_utils import app_root_dir, ensure_dir, temp_dir
+from path_utils import app_root_dir, ensure_dir, resource_dir, temp_dir
 
 SERVER_HOST = "127.0.0.1"
 SERVER_PORT = 8000
-STARTUP_LOG = "/tmp/generic-agent-desktop.log"
-APP_RESOURCE_DIR = os.path.dirname(os.path.abspath(__file__))
+STARTUP_LOG = "/tmp/a3agent-desktop.log"
+APP_RESOURCE_DIR = str(resource_dir())
 APP_ICON_PATH = os.path.join(APP_RESOURCE_DIR, "frontend", "app_icon_round.png")
 APP_FALLBACK_ICON_PATH = os.path.join(APP_RESOURCE_DIR, "frontend", "logo-transparent.png")
 APP_EFFECTIVE_ICON_PATH = APP_ICON_PATH if os.path.exists(APP_ICON_PATH) else APP_FALLBACK_ICON_PATH
@@ -37,7 +38,7 @@ def log_line(msg):
     except Exception:
         pass
 
-def configure_qt_runtime(base_dir):
+def configure_qt_runtime(base_dir, writable_root=None):
     py_ver = f"python{sys.version_info.major}.{sys.version_info.minor}"
     qt5_dir = os.path.join(base_dir, "lib", py_ver, "PyQt5", "Qt5")
     if not os.path.isdir(qt5_dir):
@@ -80,6 +81,16 @@ def configure_qt_runtime(base_dir):
     if os.path.isdir(qt_lib_dir):
         _prepend_env("DYLD_FRAMEWORK_PATH", qt_lib_dir)
         _prepend_env("DYLD_LIBRARY_PATH", qt_lib_dir)
+    if writable_root:
+        qt_root = ensure_dir(os.path.join(writable_root, "qtwebengine"))
+        qt_cache = ensure_dir(os.path.join(qt_root, "cache"))
+        qt_profile = ensure_dir(os.path.join(qt_root, "profile"))
+        os.environ["GA_QTWEBENGINE_ROOT"] = str(qt_root)
+        os.environ["XDG_CACHE_HOME"] = str(qt_cache)
+        flags = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "").strip()
+        user_data_flag = f"--user-data-dir={qt_profile}"
+        if user_data_flag not in flags.split():
+            os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = (f"{flags} {user_data_flag}").strip()
     os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")
 
 def pick_server_port():
@@ -88,21 +99,40 @@ def pick_server_port():
         return s.getsockname()[1]
 
 UVICORN_SERVER = None
+SERVER_SOCKET = None
+
+def reserve_server_socket(port=0):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind((SERVER_HOST, int(port)))
+    sock.listen(2048)
+    return sock
 
 def start_server():
+    global SERVER_SOCKET
     try:
         log_line("start_server thread begin")
         from api_server import app
         log_line("api_server imported")
+        if SERVER_SOCKET is None:
+            raise RuntimeError("server socket not reserved")
+        server_socket = SERVER_SOCKET
         config = uvicorn.Config(app, host=SERVER_HOST, port=SERVER_PORT, log_level="error", loop="asyncio", http="h11", ws="none", lifespan="off")
         server = uvicorn.Server(config)
         global UVICORN_SERVER
         UVICORN_SERVER = server
-        server.run()
+        asyncio.run(server.serve(sockets=[server_socket]))
         log_line("uvicorn.Server.run returned")
     except BaseException as e:
         log_line(f"Error starting server: {e}")
         log_line(traceback.format_exc())
+    finally:
+        try:
+            if SERVER_SOCKET is not None:
+                SERVER_SOCKET.close()
+                SERVER_SOCKET = None
+        except Exception:
+            pass
 
 def stop_server():
     try:
@@ -291,7 +321,14 @@ class MainWindow(QMainWindow):
         self.browser = None
         try:
             log_line("webengine import begin")
-            from PyQt5.QtWebEngineWidgets import QWebEngineView, QWebEnginePage
+            from PyQt5.QtWebEngineWidgets import QWebEngineView, QWebEnginePage, QWebEngineProfile
+            qt_root = os.environ.get("GA_QTWEBENGINE_ROOT")
+            if qt_root:
+                profile = QWebEngineProfile.defaultProfile()
+                cache_path = str(ensure_dir(os.path.join(qt_root, "cache")))
+                storage_path = str(ensure_dir(os.path.join(qt_root, "profile")))
+                profile.setCachePath(cache_path)
+                profile.setPersistentStoragePath(storage_path)
             class LoggingWebEnginePage(QWebEnginePage):
                 def javaScriptConsoleMessage(self, level, message, lineNumber, sourceID):
                     try:
@@ -454,18 +491,18 @@ if __name__ == "__main__":
     except Exception:
         pass
     sys.excepthook = lambda et, ev, tb: log_line("".join(traceback.format_exception(et, ev, tb)))
-    base_dir = os.path.dirname(os.path.abspath(__file__))
+    base_dir = str(resource_dir())
     log_line(f"Boot base_dir={base_dir}")
 
     # Determine if running in a frozen bundle
-    is_frozen = getattr(sys, 'frozen', False) or "Generic Agent.app" in base_dir
+    is_frozen = getattr(sys, 'frozen', False) or "A3Agent.app" in base_dir
 
     if is_frozen:
         # User Data Directory (Persistent)
         if os.environ.get("AI_AGENT") == "TRAE" or os.environ.get("TRAE_SANDBOX_CLI_PATH"):
-            user_data_dir = "/tmp/Generic Agent"
+            user_data_dir = "/tmp/A3Agent"
         else:
-            user_data_dir = str(app_root_dir("Generic Agent"))
+            user_data_dir = str(app_root_dir("A3Agent"))
         ensure_dir(user_data_dir)
         
         log_line(f"Running in frozen mode. Redirecting to user data dir: {user_data_dir}")
@@ -511,7 +548,7 @@ if __name__ == "__main__":
             print(f"[{datetime.now()}] App started in {user_data_dir}")
         except Exception as e:
             try:
-                fallback_log = "/tmp/generic-agent-app.log"
+                fallback_log = "/tmp/a3agent-app.log"
                 sys.stdout = open(fallback_log, "a", buffering=1, encoding="utf-8")
                 sys.stderr = open(fallback_log, "a", buffering=1, encoding="utf-8")
                 print(f"[{datetime.now()}] App started in {user_data_dir} (log redirected due to: {e})")
@@ -523,11 +560,12 @@ if __name__ == "__main__":
         os.chdir(base_dir)
         os.environ["GA_USER_DATA_DIR"] = base_dir
 
-    configure_qt_runtime(base_dir)
+    configure_qt_runtime(base_dir, user_data_dir if getattr(sys, 'frozen', False) else base_dir)
     os.environ["GA_BASE_DIR"] = base_dir
     os.environ["GA_FRONTEND_DIR"] = os.path.join(base_dir, "frontend")
-    SERVER_PORT = pick_server_port()
-    log_line(f"Using local server port: {SERVER_PORT}")
+    SERVER_SOCKET = reserve_server_socket()
+    SERVER_PORT = SERVER_SOCKET.getsockname()[1]
+    log_line(f"Reserved local server port: {SERVER_PORT}")
 
     # Fix for macOS font issues and input method
     os.environ['QT_MAC_WANTS_LAYER'] = '1'

@@ -16,15 +16,65 @@
             }
         })();
     </script>
-    <script>
-        window.tailwind = window.tailwind || {};
-        window.tailwind.config = { darkMode: 'class' };
-    </script>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
-    <script src="https://unpkg.com/lucide@latest"></script>
+    <link rel="stylesheet" href="./vendor/tailwind.css" />
+    <script src="./vendor/vue.global.js"></script>
+    <script src="./vendor/lucide.min.js"></script>
     <style>
         [v-cloak] { display: none; }
+        .startup-fallback {
+            position: fixed;
+            inset: 0;
+            z-index: 60;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+            background:
+                radial-gradient(circle at top, rgba(59, 130, 246, 0.14), transparent 40%),
+                linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+            color: #0f172a;
+            transition: opacity 180ms ease;
+        }
+        html.dark .startup-fallback {
+            background:
+                radial-gradient(circle at top, rgba(59, 130, 246, 0.18), transparent 40%),
+                linear-gradient(180deg, #0f172a 0%, #111827 100%);
+            color: #e5e7eb;
+        }
+        html.js-ready .startup-fallback {
+            opacity: 0;
+            pointer-events: none;
+        }
+        .startup-card {
+            max-width: 560px;
+            width: 100%;
+            border-radius: 20px;
+            padding: 28px;
+            background: rgba(255, 255, 255, 0.9);
+            border: 1px solid rgba(148, 163, 184, 0.24);
+            box-shadow: 0 20px 60px rgba(15, 23, 42, 0.12);
+            backdrop-filter: blur(10px);
+        }
+        html.dark .startup-card {
+            background: rgba(17, 24, 39, 0.9);
+            border-color: rgba(148, 163, 184, 0.18);
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+        }
+        .startup-title {
+            margin: 0 0 8px;
+            font-size: 24px;
+            line-height: 1.2;
+            font-weight: 700;
+        }
+        .startup-text {
+            margin: 0;
+            font-size: 14px;
+            line-height: 1.6;
+            color: #475569;
+        }
+        html.dark .startup-text {
+            color: #cbd5e1;
+        }
         .scrollbar-hide::-webkit-scrollbar { display: none; }
         .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
         *, *::before, *::after { box-sizing: border-box; }
@@ -202,6 +252,12 @@
     </style>
 </head>
 <body class="bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-100 font-sans antialiased h-screen overflow-hidden">
+    <div id="startup-fallback" class="startup-fallback">
+        <div class="startup-card">
+            <h1 class="startup-title">A3Agent 正在启动</h1>
+            <p class="startup-text">如果界面长时间停留在这里，通常是前端资源没有加载成功。现在已经改成只使用本地资源，正常情况下几秒内就会进入主界面。</p>
+        </div>
+    </div>
     <div id="app" v-cloak class="flex h-full w-full overflow-hidden">
         <!-- Sidebar -->
         <aside class="w-64 bg-white dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700 flex flex-col transition-all duration-300 z-20 absolute md:relative h-full shadow-lg md:shadow-none overflow-hidden" 
@@ -660,8 +716,8 @@
             };
         }
     </script>
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-    <script src="app.js?v=11"></script>
+    <script src="./vendor/marked.umd.js"></script>
+    <script src="./app.js?v=12"></script>
     <script>
         (function () {
             const STORAGE_KEY = 'ga_theme';
@@ -738,6 +794,28 @@
             btn.addEventListener('click', () => {
                 setMode(nextMode(readMode()));
             });
+        })();
+    </script>
+    <script>
+        (function () {
+            const fallback = document.getElementById('startup-fallback');
+            const startedAt = Date.now();
+            const tick = () => {
+                if (window.__A3_APP_READY__) {
+                    document.documentElement.classList.add('js-ready');
+                    if (fallback) {
+                        fallback.remove();
+                    }
+                    return;
+                }
+                if (Date.now() - startedAt > 6000 && fallback) {
+                    fallback.querySelector('.startup-title').textContent = 'A3Agent 启动失败';
+                    fallback.querySelector('.startup-text').textContent = '前端脚本没有完成挂载，可能是本地脚本损坏或者后端没有启动。请打开开发者工具查看控制台报错。';
+                } else {
+                    window.setTimeout(tick, 200);
+                }
+            };
+            window.setTimeout(tick, 200);
         })();
     </script>
 </body>

@@ -34,6 +34,7 @@
       "bin/python-backend"
     ],
     "resources": [
+      "../ga_config/**/*",
       "../python-backend/**/*",
       "../frontend/**/*"
     ]

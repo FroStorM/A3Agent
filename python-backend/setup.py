@@ -22,34 +22,66 @@ try:
 except ImportError:
     pass
 
-APP = ['desktop_app.py']
+BACKEND_ROOT = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.dirname(BACKEND_ROOT)
+APP = [os.path.join(BACKEND_ROOT, 'desktop_app.py')]
 
 def _prepare_resource_staging():
-    project_root = os.path.dirname(os.path.abspath(__file__))
-    staging_root = os.path.join(project_root, "build", "resource_staging")
+    staging_root = os.path.join(BACKEND_ROOT, "build", "resource_staging")
     os.makedirs(staging_root, exist_ok=True)
 
-    src_memory_dir = os.path.join(project_root, "memory")
-    dst_memory_dir = os.path.join(staging_root, "memory")
-    if os.path.exists(dst_memory_dir):
-        shutil.rmtree(dst_memory_dir)
-    if os.path.isdir(src_memory_dir):
-        for root, dirs, files in os.walk(src_memory_dir):
-            dirs[:] = [d for d in dirs if isinstance(d, str) and d not in ("__pycache__",) and not d.startswith(".")]
-            rel = os.path.relpath(root, src_memory_dir)
-            out_dir = dst_memory_dir if rel == "." else os.path.join(dst_memory_dir, rel)
+    def _stage_tree(name, src_root, allowed_suffixes=None, ignored_dirs=None, ignored_files=None):
+        dst_root = os.path.join(staging_root, name)
+        if os.path.exists(dst_root):
+            shutil.rmtree(dst_root)
+        if not os.path.isdir(src_root):
+            return dst_root
+        ignored_dirs = set(ignored_dirs or ())
+        ignored_files = set(ignored_files or ())
+        for root, dirs, files in os.walk(src_root):
+            dirs[:] = [
+                d for d in dirs
+                if isinstance(d, str)
+                and d not in ("__pycache__",)
+                and d not in ignored_dirs
+                and not d.startswith(".")
+            ]
+            rel = os.path.relpath(root, src_root)
+            out_dir = dst_root if rel == "." else os.path.join(dst_root, rel)
             os.makedirs(out_dir, exist_ok=True)
-            for name in files:
-                if not isinstance(name, str) or name.startswith(".") or not name.endswith(".md"):
+            for entry in files:
+                if (
+                    not isinstance(entry, str)
+                    or entry in ignored_files
+                    or entry.startswith(".")
+                    or entry.endswith((".pyc", ".pyo"))
+                ):
                     continue
-                src = os.path.join(root, name)
-                dst = os.path.join(out_dir, name)
+                if allowed_suffixes and not entry.endswith(allowed_suffixes):
+                    continue
+                src = os.path.join(root, entry)
+                dst = os.path.join(out_dir, entry)
                 if os.path.isfile(src):
                     shutil.copy2(src, dst)
+        return dst_root
 
-    return dst_memory_dir
+    staged_paths = []
+    staged_paths.append(_stage_tree("memory", os.path.join(REPO_ROOT, "memory")))
+    staged_paths.append(
+        _stage_tree(
+            "ga_config",
+            os.path.join(BACKEND_ROOT, "ga_config"),
+            ignored_dirs=("ga_config", "temp"),
+            ignored_files=("mykey.json", "mykey.py"),
+        )
+    )
+    for mykey_name in ("mykey.json", "mykey.py"):
+        mykey_src = os.path.join(BACKEND_ROOT, mykey_name)
+        if os.path.isfile(mykey_src):
+            shutil.copy2(mykey_src, os.path.join(staging_root, "ga_config", mykey_name))
+    return staged_paths
 
-STAGED_MEMORY_DIR = _prepare_resource_staging()
+STAGED_RESOURCE_DIRS = _prepare_resource_staging()
 _base_prefix = getattr(sys, "base_prefix", sys.prefix)
 _framework_candidates = [
     os.path.join(_base_prefix, "lib", "libffi.8.dylib"),
@@ -58,20 +90,23 @@ _framework_candidates = [
 ]
 _extra_frameworks = [p for p in _framework_candidates if os.path.exists(p)]
 OPTIONS = {
-    'iconfile': 'assets/app.icns',
+    'iconfile': os.path.join(BACKEND_ROOT, 'assets', 'app.icns'),
     'compressed': True,
     'optimize': 2,
     'strip': True,
-    'resources': ['frontend', 'assets', STAGED_MEMORY_DIR],
+    'resources': [
+        os.path.join(REPO_ROOT, 'frontend'),
+        os.path.join(BACKEND_ROOT, 'assets'),
+    ] + STAGED_RESOURCE_DIRS,
     'frameworks': _extra_frameworks,
     'plist': {
-        'CFBundleName': 'Generic Agent',
-        'CFBundleDisplayName': 'Generic Agent',
-        'CFBundleGetInfoString': "Generic Agent Desktop App",
-        'CFBundleIdentifier': "com.genericagent.desktop",
+        'CFBundleName': 'A3Agent',
+        'CFBundleDisplayName': 'A3Agent',
+        'CFBundleGetInfoString': "A3Agent Desktop App",
+        'CFBundleIdentifier': "com.guofang.a3agent.desktop",
         'CFBundleVersion': "1.0.0",
         'CFBundleShortVersionString': "1.0.0",
-        'NSHumanReadableCopyright': u"Copyright © 2026, Generic Agent, All Rights Reserved",
+        'NSHumanReadableCopyright': u"Copyright © 2026, A3Agent, All Rights Reserved",
         'LSUIElement': False, # Show dock icon
     },
     'includes': [
@@ -101,17 +136,33 @@ def _codesign_app(app_path):
         return
     if shutil.which("codesign") is None:
         return
+
+    def _sign_target(target):
+        subprocess.run(
+            ["codesign", "--force", "--sign", "-", "--timestamp=none", target],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
     frameworks_dir = os.path.join(app_path, "Contents", "Frameworks")
     if os.path.isdir(frameworks_dir):
         for name in os.listdir(frameworks_dir):
-            if not name.endswith(".dylib"):
+            target = os.path.join(frameworks_dir, name)
+            if os.path.islink(target):
                 continue
-            subprocess.run(
-                ["codesign", "--force", "--sign", "-", "--timestamp=none", os.path.join(frameworks_dir, name)],
-                check=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
+            if os.path.isdir(target) and not name.endswith(".framework"):
+                continue
+            if os.path.isfile(target) and not name.endswith(".dylib"):
+                continue
+            _sign_target(target)
+    macos_dir = os.path.join(app_path, "Contents", "MacOS")
+    if os.path.isdir(macos_dir):
+        for name in os.listdir(macos_dir):
+            target = os.path.join(macos_dir, name)
+            if not os.path.isfile(target) or os.path.islink(target):
+                continue
+            _sign_target(target)
 
     subprocess.run(
         ["codesign", "--force", "--deep", "--sign", "-", "--timestamp=none", app_path],
@@ -170,13 +221,12 @@ try:
     class py2app(_py2app):
         def run(self):
             super().run()
-            project_root = os.path.dirname(os.path.abspath(__file__))
             dist_root = getattr(self, "dist_dir", None) or "dist"
             if not os.path.isabs(dist_root):
-                dist_root = os.path.join(project_root, dist_root)
+                dist_root = os.path.join(BACKEND_ROOT, dist_root)
             dist_root = os.path.abspath(dist_root)
             _remove_ds_store(dist_root)
-            app_path = os.path.join(dist_root, "Generic Agent.app")
+            app_path = os.path.join(dist_root, "A3Agent.app")
             _prune_bundle(app_path)
             _codesign_app(app_path)
 except Exception:

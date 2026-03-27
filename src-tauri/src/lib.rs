@@ -1,3 +1,4 @@
+use std::fs;
 use std::process::{Command, Stdio};
 use std::io::{BufRead, BufReader};
 use std::thread;
@@ -96,22 +97,90 @@ fn find_external_frontend_dir(python_backend_dir: &Path) -> Option<PathBuf> {
     None
 }
 
+fn find_ga_config_src_dir(resource_dir: &Path, python_backend_dir: &Path) -> Option<PathBuf> {
+    let direct_candidates = [
+        resource_dir.join("ga_config"),
+        python_backend_dir.join("ga_config"),
+    ];
+    for candidate in direct_candidates {
+        if candidate.join("memory").exists() {
+            return Some(candidate);
+        }
+    }
+
+    if let Some(parent) = python_backend_dir.parent() {
+        let candidate = parent.join("ga_config");
+        if candidate.join("memory").exists() {
+            return Some(candidate);
+        }
+    }
+
+    if let Ok(exe) = std::env::current_exe() {
+        let mut cur = exe.parent().map(|p| p.to_path_buf());
+        for _ in 0..8 {
+            if let Some(p) = cur.as_ref() {
+                let candidate = p.join("ga_config");
+                if candidate.join("memory").exists() {
+                    return Some(candidate);
+                }
+                cur = p.parent().map(|pp| pp.to_path_buf());
+            } else {
+                break;
+            }
+        }
+    }
+
+    None
+}
+
+fn copy_missing_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
+    if !src.exists() || src == dst {
+        return Ok(());
+    }
+
+    if src.is_file() {
+        if !dst.exists() {
+            if let Some(parent) = dst.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::copy(src, dst)?;
+        }
+        return Ok(());
+    }
+
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let path = entry.path();
+        let target = dst.join(entry.file_name());
+        if path.is_dir() {
+            copy_missing_tree(&path, &target)?;
+        } else if path.is_file() {
+            let needs_copy = match target.metadata() {
+                Ok(meta) => meta.len() == 0,
+                Err(_) => true,
+            };
+            if needs_copy {
+                if let Some(parent) = target.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::copy(&path, &target)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn is_project_root(path: &Path) -> bool {
     path.join("src-tauri").join("tauri.conf.json").exists()
         && path.join("python-backend").join("headless_main.py").exists()
 }
 
-fn detect_workspace_root(resource_dir: &Path, python_backend_dir: &Path) -> PathBuf {
+fn detect_workspace_root(resource_dir: &Path, python_backend_dir: &Path, app_data_dir: &Path) -> PathBuf {
     if let Ok(exe) = std::env::current_exe() {
         for ancestor in exe.ancestors() {
             if is_project_root(ancestor) {
                 return ancestor.to_path_buf();
-            }
-        }
-
-        if !cfg!(debug_assertions) {
-            if let Some(parent) = exe.parent() {
-                return parent.to_path_buf();
             }
         }
     }
@@ -130,16 +199,20 @@ fn detect_workspace_root(resource_dir: &Path, python_backend_dir: &Path) -> Path
         }
     }
 
-    python_backend_dir
-        .parent()
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| resource_dir.to_path_buf())
+    if let Some(parent) = python_backend_dir.parent() {
+        if is_project_root(parent) {
+            return parent.to_path_buf();
+        }
+    }
+
+    app_data_dir.to_path_buf()
 }
 
 fn spawn_python_backend(
     headless_main: &Path,
     python_backend_dir: &Path,
     frontend_dir: Option<&Path>,
+    config_src_dir: Option<&Path>,
     workspace_root: Option<&Path>,
     user_data_dir: Option<&Path>,
     app_data_dir: Option<&Path>,
@@ -158,10 +231,13 @@ fn spawn_python_backend(
             .arg(headless_main)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .env("GA_APP_NAME", "GenericAgent")
+            .env("GA_APP_NAME", "A3Agent")
             .env("GA_BASE_DIR", python_backend_dir);
         if let Some(dir) = frontend_dir {
             command.env("GA_FRONTEND_DIR", dir);
+        }
+        if let Some(dir) = config_src_dir {
+            command.env("GA_CONFIG_SRC_DIR", dir);
         }
         if let Some(dir) = workspace_root {
             command.env("GA_WORKSPACE_ROOT", dir);
@@ -244,7 +320,8 @@ pub fn run() {
             if !app_data_dir.exists() {
                 std::fs::create_dir_all(&app_data_dir).expect("failed to create app data dir");
             }
-            let workspace_root = detect_workspace_root(&resource_dir, &python_backend_dir);
+            let ga_config_src_dir = find_ga_config_src_dir(&resource_dir, &python_backend_dir);
+            let workspace_root = detect_workspace_root(&resource_dir, &python_backend_dir, &app_data_dir);
             if !workspace_root.exists() {
                 std::fs::create_dir_all(&workspace_root).expect("failed to create workspace root");
             }
@@ -269,6 +346,16 @@ pub fn run() {
             let frontend_dir = external_frontend_dir
                 .as_deref()
                 .unwrap_or_else(|| resource_dir.as_path());
+            if let Some(src) = ga_config_src_dir.as_deref() {
+                let targets = [
+                    ws_dir.to_path_buf(),
+                    ws_dir.join("ga_config"),
+                    ud_dir.to_path_buf(),
+                ];
+                for target in targets {
+                    let _ = copy_missing_tree(src, &target);
+                }
+            }
 
             let sidecar = if cfg!(debug_assertions) {
                 None
@@ -285,9 +372,16 @@ pub fn run() {
                 Some(Ok(sidecar_command)) => {
                     let sidecar_command = sidecar_command
                         .args(["0"])
-                        .env("GA_APP_NAME", "GenericAgent")
+                        .env("GA_APP_NAME", "A3Agent")
                         .env("GA_BASE_DIR", python_backend_dir.to_string_lossy().to_string())
                         .env("GA_FRONTEND_DIR", frontend_dir.to_string_lossy().to_string())
+                        .env(
+                            "GA_CONFIG_SRC_DIR",
+                            ga_config_src_dir
+                                .as_ref()
+                                .map(|p| p.to_string_lossy().to_string())
+                                .unwrap_or_else(|| resource_dir.join("ga_config").to_string_lossy().to_string()),
+                        )
                         .env("GA_WORKSPACE_ROOT", ws_dir.to_string_lossy().to_string())
                         .env("GA_CONFIG_DIRNAME", "ga_config")
                         .env("GA_USER_DATA_DIR", ud_dir.to_string_lossy().to_string())
@@ -338,6 +432,7 @@ pub fn run() {
                         &headless_main,
                         &python_backend_dir,
                         Some(frontend_dir),
+                        ga_config_src_dir.as_deref(),
                         Some(ws_dir),
                         Some(ud_dir),
                         Some(ad_dir),

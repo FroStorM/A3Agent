@@ -412,6 +412,7 @@ npm run tauri dev
 ### 生产构建
 
 ```bash
+npm run build:frontend
 npm run tauri build
 ```
 
