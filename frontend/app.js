@@ -48,6 +48,60 @@ createApp({
         const apiReady = ref(false);
         let bootstrapLoaded = false;
 
+        const getPrefersDark = () => {
+            try { return !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches); } catch (e) { return false; }
+        };
+
+        const applyTheme = (mode) => {
+            const html = document.documentElement;
+            const isDark = mode === 'dark' || (mode === 'system' && getPrefersDark());
+            if (isDark) {
+                html.classList.add('dark');
+            } else {
+                html.classList.remove('dark');
+            }
+            html.style.colorScheme = isDark ? 'dark' : 'light';
+            try { localStorage.setItem('ga_theme', mode); } catch (e) {}
+        };
+
+        const getStoredMode = () => {
+            const v = (() => { try { return localStorage.getItem('ga_theme'); } catch (e) { return null; } })();
+            return (v === 'light' || v === 'dark' || v === 'system') ? v : 'light';
+        };
+
+        const nextMode = (v) => v === 'system' ? 'light' : (v === 'light' ? 'dark' : 'system');
+
+        const getModeLabel = (v) => {
+            if (v === 'light') return '主题：浅色（点击切换）';
+            if (v === 'dark') return '主题：深色（点击切换）';
+            return '主题：跟随系统（点击切换）';
+        };
+
+        const getModeIcon = (v) => {
+            if (v === 'light') return 'sun';
+            if (v === 'dark') return 'moon';
+            return 'monitor';
+        };
+
+        const renderThemeButton = () => {
+            const mode = getStoredMode();
+            const btn = document.getElementById('themeToggle');
+            if (btn) {
+                btn.title = getModeLabel(mode);
+                btn.innerHTML = '<i data-lucide="' + getModeIcon(mode) + '" class="w-4 h-4"></i>';
+                if (window.lucide) lucide.createIcons();
+            }
+        };
+
+        const toggleTheme = () => {
+            const current = getStoredMode();
+            const next = nextMode(current);
+            applyTheme(next);
+            renderThemeButton();
+        };
+        window.toggleTheme = toggleTheme;
+        renderThemeButton();
+
         const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
         let floatingStateHint = '';
         let floatingStateHintUntil = 0;
@@ -142,6 +196,7 @@ createApp({
                     await fetchLlmConfigs();
                     await fetchSopList();
                     await fetchWorkspaceOptions();
+                    closeModal();
                 } else {
                     alert('Failed to update workspace: ' + data.error);
                 }
@@ -154,6 +209,11 @@ createApp({
         // Load Lucide icons
         onMounted(() => {
             if (window.lucide) lucide.createIcons();
+
+            // Theme toggle button
+            const btn = document.getElementById('themeToggle');
+            if (btn) btn.addEventListener('click', toggleTheme);
+
             ensureBackendDataLoaded();
             // Poll status every 5 seconds
             setInterval(async () => {
@@ -1230,6 +1290,7 @@ createApp({
             activeModal,
             openModal,
             closeModal,
+            toggleTheme,
             todoContent,
             saveToDo,
             sopFiles,

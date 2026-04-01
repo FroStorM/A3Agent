@@ -32,7 +32,8 @@ def get_resource_path(relative_path):
 def resolve_frontend_dir():
     env_dir = os.environ.get("GA_FRONTEND_DIR")
     if env_dir and os.path.exists(os.path.join(env_dir, "index.html")):
-        return env_dir
+        return os.path.normpath(env_dir)
+
     candidates = [
         os.path.join(BASE_DIR, "frontend"),
         os.path.join(BASE_DIR, "..", "frontend"),
@@ -41,8 +42,14 @@ def resolve_frontend_dir():
     ]
     exe_path = os.path.abspath(sys.executable)
     candidates.append(os.path.join(os.path.dirname(exe_path), "..", "Resources", "frontend"))
+
+    # For bundled/portable mode: check if frontend is in the same directory as exe
+    if getattr(sys, 'frozen', False):
+        exe_dir = os.path.dirname(exe_path)
+        candidates.insert(0, os.path.join(exe_dir, "frontend"))
+
     for path in candidates:
-        p = os.path.abspath(path)
+        p = os.path.normpath(os.path.abspath(path))
         if os.path.exists(os.path.join(p, "index.html")):
             return p
     return None
@@ -74,7 +81,7 @@ async def add_frontend_no_cache_headers(request: Request, call_next):
     return response
 
 def _default_app_root_dir():
-    app_name = os.environ.get("GA_APP_NAME") or "GenericAgent"
+    app_name = os.environ.get("GA_APP_NAME") or "A3Agent"
     home = os.path.expanduser("~")
     if sys.platform == "darwin":
         root = os.path.join(home, "Library", "Application Support", app_name)
@@ -1294,13 +1301,13 @@ async def delete_schedule(request: Request):
         return JSONResponse(status_code=500, content={"error": str(e)})
     return {"status": "deleted"}
 
-# Mount frontend static files
-# We mount this last so API routes take precedence
-frontend_dir = resolve_frontend_dir()
-if frontend_dir:
-    app.mount("/", StaticFiles(directory=frontend_dir, html=True), name="frontend")
-else:
-    print("Warning: frontend directory not found")
+# Mount frontend static files - DISABLED in Tauri mode
+# In Tauri applications, frontend is served by Tauri itself from frontendDist
+# Python backend only provides API endpoints
+# frontend_dir = resolve_frontend_dir()
+# if frontend_dir:
+#     app.mount("/", StaticFiles(directory=frontend_dir, html=True), name="frontend")
+print("Frontend serving disabled - Tauri serves frontend from frontendDist")
 
 if __name__ == "__main__":
     import uvicorn

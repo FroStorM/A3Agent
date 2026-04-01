@@ -20,7 +20,7 @@ def generate_tool_schema():
     # 极简且具备高度概括能力的元 Prompt
     meta_prompt = f"""
 # Role
-你是一个具备深度推理能力的 AI 系统架构师。你将通过阅读 `GenericAgentHandler` 源码，构建其对应的工具能力矩阵。
+你是一个具备深度推理能力的 AI 系统架构师。你将通过阅读 `A3AgentHandler` 源码，构建其对应的工具能力矩阵。
 
 # Task
 分析下方的源码，并输出 OpenAI Tool Schema。在输出 JSON 之前，你必须进行内部思考（Thinking Process）。

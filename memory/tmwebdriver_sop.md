@@ -86,7 +86,7 @@ document.body.appendChild(el);  // 响应写回el.textContent
   - GM_openInTab在web_execute_js不可用（非油猴上下文）
 
 ## 直接import(仅作调试使用)
-- `sys.path.insert(0, GenericAgent根目录)`, `from TMWebDriver import TMWebDriver`
+- `sys.path.insert(0, A3Agent根目录)`, `from TMWebDriver import TMWebDriver`
 - `d=TMWebDriver()`, `d.set_session('url_pattern')`, `d.execute_js('code')` → 返回`{'data': value}`(非裸值)
 - 配合simphtml：`str(simphtml.optimize_html_for_tokens(html))` → 注意返回BS4 Tag需str()
 

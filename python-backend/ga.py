@@ -10,6 +10,12 @@ _this_dir = os.path.dirname(os.path.abspath(__file__))
 _resource_dir = os.environ.get("GA_BASE_DIR") or _this_dir
 if _resource_dir.endswith(".zip") and os.path.isfile(_resource_dir):
     _resource_dir = os.path.dirname(os.path.dirname(_resource_dir))
+# 去掉 Windows UNC 长路径前缀 \\?\ 避免与正斜杠路径拼接出错
+if isinstance(_resource_dir, str) and _resource_dir.startswith("\\\\?\\"):
+    _resource_dir = _resource_dir[4:]
+# 当以 PyInstaller onefile 打包时，assets/ 在 _MEIPASS 临时目录中而非 exe 所在目录
+if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+    _resource_dir = sys._MEIPASS
 _data_dir = os.environ.get("GA_USER_DATA_DIR") or _resource_dir
 
 from agent_loop import BaseHandler, StepOutcome, try_call_generator
@@ -25,6 +31,8 @@ def code_run(code, code_type="python", timeout=60, cwd=None, code_cwd=None, stop
     cwd = cwd or os.path.join(_data_dir, 'temp'); tmp_path = None
     if code_type == "python":
         tmp_file = tempfile.NamedTemporaryFile(suffix=".ai.py", delete=False, mode='w', encoding='utf-8', dir=code_cwd)
+        cr_header = os.path.join(_resource_dir, 'assets', 'code_run_header.py')
+        if os.path.exists(cr_header): tmp_file.write(open(cr_header, encoding='utf-8').read())
         tmp_file.write(code)
         tmp_path = tmp_file.name
         tmp_file.close()
@@ -197,6 +205,20 @@ def web_execute_js(script, switch_tab_id=None, no_monitor=False):
     except Exception as e:
         return {"status": "error", "msg": format_error(e)}
     
+def expand_file_refs(text, base_dir=None):
+    """展开文本中的 {{file:路径:起始行:结束行}} 引用为实际文件内容。
+    可与普通文本混排。展开失败抛 ValueError。
+    base_dir: 相对路径的基准目录，默认为进程 cwd。"""
+    pattern = r'\{\{file:(.+?):(\d+):(\d+)\}\}'
+    def replacer(match):
+        path, start, end = match.group(1), int(match.group(2)), int(match.group(3))
+        path = os.path.abspath(os.path.join(base_dir or '.', path))
+        if not os.path.isfile(path): raise ValueError(f"引用文件不存在: {path}")
+        with open(path, 'r', encoding='utf-8') as f: lines = f.readlines()
+        if start < 1 or end > len(lines) or start > end: raise ValueError(f"行号越界: {path} 共{len(lines)}行, 请求{start}-{end}")
+        return ''.join(lines[start-1:end])
+    return re.sub(pattern, replacer, text)
+
 def file_patch(path: str, old_content: str, new_content: str):
     """在文件中寻找唯一的 old_content 块并替换为 new_content。
     """
@@ -252,8 +274,8 @@ def smart_format(data, max_depth=2, max_str_len=100, omit_str=' ... '):
     if isinstance(data, (str, bytes)): return truncate(data, 0)
     return json.dumps(truncate(data, 0), indent=2, ensure_ascii=False, default=str)
 
-class GenericAgentHandler(BaseHandler):
-    '''Generic Agent 工具库，包含多种工具的实现。工具函数自动加上了 do_ 前缀。实际工具名没有前缀。'''
+class A3AgentHandler(BaseHandler):
+    '''A3Agent 工具库，包含多种工具的实现。工具函数自动加上了 do_ 前缀。实际工具名没有前缀。'''
     def __init__(self, parent, last_history=None, cwd='./'):
         self.parent = parent
         self.key_info = ""
@@ -267,34 +289,36 @@ class GenericAgentHandler(BaseHandler):
         return os.path.abspath(os.path.join(self.cwd, path))
     
     def tool_after_callback(self, tool_name, args, response, ret):
+        if args.get('_index', 0) > 0: return
         rsumm = re.search(r"<summary>(.*?)</summary>", response.content, re.DOTALL)
         if rsumm: summary = rsumm.group(1).strip()[:200]
         else:
-            summary = f"调用工具{tool_name}, args: {args}"
+            clean_args = {k: v for k, v in args.items() if not k.startswith('_')}
+            summary = f"调用工具{tool_name}, args: {clean_args}"
             if tool_name == 'no_tool': summary = "直接回答了用户问题"
             if type(ret.next_prompt) is str:
-                ret.next_prompt += "\nPROTOCOL_VIOLATION: 上一轮遗漏了<summary>。 我已根据物理动作自动补全。请务必在下次回复中记得<summary>协议。" 
+                ret.next_prompt += "\nPROTOCOL_VIOLATION: 上一轮遗漏了<summary>。 我已根据物理动作自动补全。请务必在下次回复中记得<summary>协议。"
         self.history_info.append('[Agent] ' + smart_format(summary, max_str_len=100))
 
     def do_code_run(self, args, response):
         '''执行代码片段，有长度限制，不允许代码中放大量数据，如有需要应当通过文件读取进行。
         '''
+        if response.tool_calls and sum(1 for tc in response.tool_calls[:args.get('_index', 0)] if tc.function.name == 'code_run') > 0:
+            return StepOutcome("[BLANK]", next_prompt="no multi code_run in one round!")
         code_type = args.get("type", "python")
-        # 从 response.content 中提取代码块, 匹配 ```python ... ``` 或 ```powershell ... ```
-        pattern = rf"```{code_type}\n(.*?)\n```"
-        matches = re.findall(pattern, response.content, re.DOTALL)
-        warning = ""
-        if not matches:
-            code = args.get("code")
-            if not code: return StepOutcome(None, next_prompt=f"【系统错误】：你调用了 code_run，但未在先在回复正文中提供 ```{code_type} 代码块。请重新输出代码并附带工具调用。")
-            warning = "\n下次要记得先在回复正文中提供代码块，而不是放在参数中"
-        else: code = matches[-1].strip()   # 提取最后一个代码块（通常是模型修正后的最终逻辑）
+        code = args.get("code") or args.get("script")
+        if not code:
+            # 从 response.content 中提取代码块, 匹配 ```python ... ``` 或 ```powershell ... ```
+            pattern = rf"```{code_type}\n(.*?)\n```"
+            matches = re.findall(pattern, response.content, re.DOTALL)
+            if not matches: return StepOutcome(None, next_prompt=f"[Error] Code missing. Use ```{code_type} block or 'script' arg.")
+            code = matches[-1].strip()   # 提取最后一个代码块（通常是模型修正后的最终逻辑）
         timeout = args.get("timeout", 60)
         raw_path = os.path.join(self.cwd, args.get("cwd", './'))
         cwd = os.path.normpath(os.path.abspath(raw_path))
         code_cwd = os.path.normpath(self.cwd)
         result = yield from code_run(code, code_type, timeout, cwd, code_cwd=code_cwd, stop_signal=self.code_stop_signal)
-        next_prompt = self._get_anchor_prompt() + warning
+        next_prompt = self._get_anchor_prompt()
         return StepOutcome(result, next_prompt=next_prompt)
     
     def do_ask_user(self, args, response):

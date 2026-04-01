@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "GenericAgent",
+  "productName": "A3Agent",
   "version": "0.1.0",
-  "identifier": "com.guofang.ga-solo",
+  "identifier": "com.guofang.a3agent",
   "build": {
     "frontendDist": "../frontend"
   },
@@ -11,9 +11,11 @@
     "macOSPrivateApi": true,
     "windows": [
       {
-        "title": "GenericAgent",
+        "title": "A3Agent",
         "width": 800,
-        "height": 600
+        "height": 600,
+        "visible": false,
+        "center": true
       }
     ],
     "security": {
@@ -30,12 +32,9 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "resources": [],
     "externalBin": [
-      "bin/python-backend"
-    ],
-    "resources": [
-      "../python-backend/**/*",
-      "../frontend/**/*"
+      "binaries/python-backend"
     ]
   }
 }

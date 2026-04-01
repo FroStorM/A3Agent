@@ -10,10 +10,16 @@ _this_dir = os.path.dirname(os.path.abspath(__file__))
 _resource_dir = os.environ.get("GA_BASE_DIR") or _this_dir
 if _resource_dir.endswith(".zip") and os.path.isfile(_resource_dir):
     _resource_dir = os.path.dirname(os.path.dirname(_resource_dir))
+# 去掉 Windows UNC 长路径前缀 \\?\ 避免与正斜杠路径拼接出错
+if isinstance(_resource_dir, str) and _resource_dir.startswith("\\\\?\\"):
+    _resource_dir = _resource_dir[4:]
+# 当以 PyInstaller onefile 打包时，assets/ 在 _MEIPASS 临时目录中而非 exe 所在目录
+if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+    _resource_dir = sys._MEIPASS
 
 from sidercall import SiderLLMSession, LLMSession, ToolClient, ClaudeSession, XaiSession
 from agent_loop import agent_runner_loop, StepOutcome, BaseHandler
-from ga import GenericAgentHandler, smart_format, get_global_memory, format_error
+from ga import A3AgentHandler, smart_format, get_global_memory, format_error
 
 with open(os.path.join(_resource_dir, 'assets/tools_schema.json'), 'r', encoding='utf-8') as f:
     TS = f.read()
@@ -249,7 +255,7 @@ class GeneraticAgent:
             self.history = self._trim_history(self.history)
             
             sys_prompt = get_system_prompt()
-            handler = GenericAgentHandler(None, self.history, os.path.join(_get_data_dir(), 'temp'))
+            handler = A3AgentHandler(None, self.history, os.path.join(_get_data_dir(), 'temp'))
             if self.handler and self.handler.key_info: 
                 handler.key_info = self.handler.key_info
                 if '清除工作记忆' not in handler.key_info:

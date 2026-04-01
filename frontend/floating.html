@@ -3,16 +3,28 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>GenericAgent</title>
+    <title>A3Agent</title>
     <style>
       html,
       body {
         width: 100%;
         height: 100%;
         margin: 0;
-        background: transparent;
+        padding: 0;
+        background: transparent !important;
         overflow: hidden;
         user-select: none;
+        -webkit-user-select: none;
+        -webkit-app-region: no-drag;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      /* 强制移除所有可能的边框 */
+      html, body, .drag {
+        border: none !important;
+        outline: none !important;
+        box-shadow: none !important;
       }
       .drag {
         width: 100%;
@@ -20,6 +32,8 @@
         display: flex;
         align-items: center;
         justify-content: center;
+        pointer-events: none;
+        background: transparent !important;
       }
       button {
         position: relative;
@@ -37,6 +51,7 @@
         cursor: pointer;
         overflow: visible;
         transition: transform 140ms ease, box-shadow 200ms ease, border-color 200ms ease, background 200ms ease;
+        pointer-events: auto;
       }
       button:active { transform: scale(0.96); }
       button::before {
@@ -49,6 +64,7 @@
         opacity: 1;
         z-index: 0;
         transition: background 220ms ease, opacity 220ms ease, transform 220ms ease;
+        pointer-events: none;
       }
       button::after {
         content: "";
@@ -113,6 +129,9 @@
         display: block;
         object-fit: contain;
         filter: drop-shadow(0 2px 4px rgba(15, 23, 42, 0.10));
+        pointer-events: none;
+        user-select: none;
+        -webkit-user-drag: none;
       }
       @keyframes glow-pulse {
         0%, 100% { transform: scale(0.96); opacity: 0.7; }
@@ -122,65 +141,75 @@
   </head>
   <body>
     <div class="drag">
-      <button id="toggle" type="button" aria-label="GenericAgent">
-        <img alt="GA" src="logo-transparent.png" />
+      <button id="toggle" type="button" aria-label="A3Agent">
+        <img alt="GA" src="logo-transparent.png" draggable="false" />
       </button>
     </div>
+
     <script>
       const { invoke } = window.__TAURI__.core;
       const { getCurrentWindow } = window.__TAURI__.window;
+      const { Menu, MenuItem } = window.__TAURI__.menu;
       const appWindow = getCurrentWindow();
       const btn = document.getElementById("toggle");
+
       let latchedState = "";
       let latchedUntil = 0;
       const latchState = (state, ttlMs = 0) => {
         latchedState = state || "";
         latchedUntil = ttlMs > 0 ? (Date.now() + ttlMs) : 0;
       };
+
       const applyStatus = (payload) => {
         const explicitState = payload?.state ? String(payload.state) : "";
         const uiState = payload?.ui_state ? String(payload.ui_state) : "";
         const resolved = explicitState || uiState;
+
+        // 优先检查 needs_human_input
+        if (payload?.needs_human_input === true) {
+          latchState("need-user", 0);
+          document.documentElement.dataset.state = "need-user";
+          return;
+        }
+
         if (payload?.agent_init_error || resolved === "error") {
           latchState("error", 0);
           document.documentElement.dataset.state = "error";
           return;
         }
+
         if (resolved === "need-user") {
           latchState("need-user", 0);
           document.documentElement.dataset.state = "need-user";
           return;
         }
-        if (resolved === "running") {
+
+        // 检查 is_running
+        if (payload?.is_running === true || resolved === "running") {
           latchState("running", 7000);
           document.documentElement.dataset.state = "running";
           return;
         }
+
         if (resolved === "idle") {
           latchState("", 0);
           document.documentElement.dataset.state = "idle";
           return;
         }
+
         if (latchedState && (!latchedUntil || Date.now() <= latchedUntil)) {
           document.documentElement.dataset.state = latchedState;
           return;
         }
+
         if (latchedUntil && Date.now() > latchedUntil) {
           latchState("", 0);
         }
-        if (payload?.needs_human_input) {
-          latchState("need-user", 0);
-          document.documentElement.dataset.state = "need-user";
-          return;
-        }
-        if (payload?.is_running) {
-          latchState("running", 7000);
-          document.documentElement.dataset.state = "running";
-          return;
-        }
+
         latchState("", 0);
         document.documentElement.dataset.state = "idle";
       };
+
       const refreshStatus = async () => {
         try {
           const res = await fetch('/api/status', { cache: 'no-store' });
@@ -189,20 +218,29 @@
           applyStatus(data);
         } catch {}
       };
+
       try {
         const { listen } = window.__TAURI__.event;
         listen("ga-status", (event) => {
           applyStatus(event?.payload || {});
         });
       } catch {}
+
       refreshStatus();
       setInterval(refreshStatus, 1000);
+
+      // 拖拽和点击逻辑
       let isDragging = false;
       let startX = 0, startY = 0;
+
       btn.addEventListener("pointerdown", (e) => {
-        isDragging = false; startX = e.clientX; startY = e.clientY;
+        if (e.button === 2) return; // 忽略右键
+        isDragging = false;
+        startX = e.clientX;
+        startY = e.clientY;
         btn.setPointerCapture(e.pointerId);
       });
+
       btn.addEventListener("pointermove", async (e) => {
         const dx = e.clientX - startX, dy = e.clientY - startY;
         if (!isDragging && dx * dx + dy * dy > 25) {
@@ -210,16 +248,54 @@
           try { await appWindow.startDragging(); } catch (err) { console.error(err); }
         }
       });
+
       btn.addEventListener("pointerup", async (e) => {
+        if (e.button === 2) return; // 忽略右键
         btn.releasePointerCapture(e.pointerId);
         if (!isDragging) {
           try { await invoke("toggle_main_window"); } catch (err) { console.error(err); }
         }
         isDragging = false;
       });
+
       btn.addEventListener("pointercancel", (e) => {
         try { btn.releasePointerCapture(e.pointerId); } catch {}
         isDragging = false;
+      });
+
+      // 右键菜单 - 使用Tauri原生菜单
+      btn.addEventListener("contextmenu", async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+
+        try {
+          // 创建原生菜单
+          const menu = await Menu.new({
+            items: [
+              await MenuItem.new({
+                id: 'cancel',
+                text: '取消',
+                action: () => {}
+              }),
+              await MenuItem.new({
+                id: 'exit',
+                text: '退出',
+                action: async () => {
+                  try {
+                    await invoke("exit_app");
+                  } catch (err) {
+                    console.error(err);
+                  }
+                }
+              })
+            ]
+          });
+
+          // 在鼠标位置显示菜单
+          await menu.popup();
+        } catch (err) {
+          console.error('Failed to show context menu:', err);
+        }
       });
     </script>
   </body>

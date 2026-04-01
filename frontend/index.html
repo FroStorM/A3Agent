@@ -3,7 +3,67 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>GenericAgent</title>
+    <title>A3Agent</title>
+    <script>
+        // Intercept fetch and EventSource to redirect /api/* to Python backend
+        (function() {
+            var _backendPort = null;
+            var _portReady = null;
+            var _portReadyResolve = null;
+
+            function getPortPromise() {
+                if (_backendPort) return Promise.resolve(_backendPort);
+                if (!_portReady) {
+                    _portReady = new Promise(function(resolve) { _portReadyResolve = resolve; });
+                }
+                return _portReady;
+            }
+
+            window.addEventListener('backendReady', function(e) {
+                _backendPort = e.detail;
+                window.__BACKEND_PORT__ = _backendPort;
+                if (_portReadyResolve) { _portReadyResolve(_backendPort); _portReadyResolve = null; }
+            });
+
+            // Also allow direct assignment
+            Object.defineProperty(window, '__BACKEND_PORT__', {
+                get: function() { return _backendPort; },
+                set: function(v) {
+                    _backendPort = v;
+                    if (_portReadyResolve) { _portReadyResolve(v); _portReadyResolve = null; }
+                },
+                configurable: true
+            });
+
+            const _origFetch = window.fetch;
+            window.fetch = function(input, init) {
+                var url = typeof input === 'string' ? input : (input instanceof Request ? input.url : null);
+                if (url && url.startsWith('/')) {
+                    var timeout = new Promise(function(_, reject) {
+                        setTimeout(function() { reject(new Error('Backend port timeout')); }, 15000);
+                    });
+                    return Promise.race([getPortPromise(), timeout]).then(function(port) {
+                        var fullUrl = 'http://127.0.0.1:' + port + url;
+                        if (typeof input === 'string') {
+                            return _origFetch.call(window, fullUrl, init);
+                        } else {
+                            return _origFetch.call(window, new Request(fullUrl, input), init);
+                        }
+                    });
+                }
+                return _origFetch.call(window, input, init);
+            };
+
+            const _origEventSource = window.EventSource;
+            window.EventSource = function(url, config) {
+                if (typeof url === 'string' && url.startsWith('/')) {
+                    var port = _backendPort;
+                    if (port) url = 'http://127.0.0.1:' + port + url;
+                }
+                return new _origEventSource(url, config);
+            };
+        })();
+    </script>
     <script>
         (function () {
             try {
@@ -21,6 +81,35 @@
         window.tailwind.config = { darkMode: 'class' };
     </script>
     <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        :root {
+            --bg-primary: #ffffff;
+            --bg-secondary: #f9fafb;
+            --bg-tertiary: #f3f4f6;
+            --bg-hover: #e5e7eb;
+            --bg-card: #eff6ff;
+            --text-primary: #111827;
+            --text-secondary: #374151;
+            --text-muted: #6b7280;
+            --border-color: #e5e7eb;
+            --border-hover: #d1d5db;
+        }
+        html.dark {
+            --bg-primary: #111827;
+            --bg-secondary: #1f2937;
+            --bg-tertiary: #374151;
+            --bg-hover: #4b5563;
+            --bg-card: rgba(30, 58, 138, 0.2);
+            --text-primary: #f3f4f6;
+            --text-secondary: #e5e7eb;
+            --text-muted: #9ca3af;
+            --border-color: #374151;
+            --border-hover: #4b5563;
+        }
+        html:not(.dark) *:not(i):not([data-lucide]) {
+            transition: background-color 0.15s, color 0.15s, border-color 0.15s;
+        }
+    </style>
     <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
     <script src="https://unpkg.com/lucide@latest"></script>
     <style>
@@ -168,6 +257,608 @@
         html.dark .ga-modal-panel button.w-full.text-left {
             background-color: rgba(255, 255, 255, 0.06);
         }
+
+        /* Apply CSS variables to all key elements - bypasses Tailwind JIT limitations */
+        body {
+            background-color: var(--bg-primary) !important;
+            color: var(--text-primary) !important;
+        }
+        html:not(.dark) body {
+            color-scheme: light;
+        }
+        html.dark body {
+            color-scheme: dark;
+        }
+        #app, #chat-container, .ga-modal-overlay {
+            background-color: var(--bg-primary) !important;
+        }
+        #chat-container .prose,
+        #chat-container .prose pre,
+        #chat-container .prose code,
+        #chat-container .prose p,
+        #chat-container .prose h1,
+        #chat-container .prose h2,
+        #chat-container .prose h3,
+        #chat-container .prose ul,
+        #chat-container .prose ol,
+        #chat-container .prose blockquote {
+            color: var(--text-primary) !important;
+        }
+        #chat-container .prose pre,
+        #chat-container .prose code {
+            background-color: var(--bg-tertiary) !important;
+        }
+        #chat-container .prose a {
+            color: #2563eb !important;
+        }
+        html.dark #chat-container .prose a {
+            color: #60a5fa !important;
+        }
+        html.dark #chat-container .prose pre {
+            background-color: rgba(31, 41, 55, 0.8) !important;
+        }
+        html.dark #chat-container .prose blockquote {
+            border-left-color: #4b5563 !important;
+            color: var(--text-secondary) !important;
+        }
+        html:not(.dark) #chat-container .prose blockquote {
+            border-left-color: #d1d5db !important;
+        }
+
+        /* Sidebar & Status Card */
+        aside,
+        aside .bg-white,
+        html.dark aside .dark\:bg-gray-800 {
+            background-color: var(--bg-secondary) !important;
+        }
+        aside .bg-white {
+            background-color: var(--bg-primary) !important;
+        }
+        aside .border-gray-200,
+        aside .border-gray-700,
+        html.dark aside .dark\:border-gray-700 {
+            border-color: var(--border-color) !important;
+        }
+        aside .text-gray-700,
+        aside .text-gray-500,
+        aside .text-xs,
+        aside button span,
+        html.dark aside .dark\:text-gray-200,
+        html.dark aside .dark\:text-gray-400,
+        html.dark aside .dark\:text-gray-300 {
+            color: var(--text-secondary) !important;
+        }
+        aside .text-blue-600,
+        html.dark aside .dark\:text-blue-400 {
+            color: #2563eb !important;
+        }
+        html.dark aside .dark\:text-blue-400 {
+            color: #60a5fa !important;
+        }
+        aside .hover\:bg-gray-100:hover,
+        html.dark aside .dark\:hover\:bg-gray-700:hover {
+            background-color: var(--bg-hover) !important;
+        }
+        .bg-blue-50 {
+            background-color: var(--bg-card) !important;
+        }
+        .border-blue-100,
+        html.dark .border-blue-800 {
+            border-color: var(--border-color) !important;
+        }
+        html.dark .border-blue-800 {
+            border-color: rgba(30, 58, 138, 0.3) !important;
+        }
+        .text-blue-600,
+        html.dark .dark\:text-blue-400 {
+            color: #2563eb !important;
+        }
+        html.dark .dark\:text-blue-400 {
+            color: #60a5fa !important;
+        }
+        .border-blue-200,
+        html.dark .dark\:border-blue-800 {
+            border-color: var(--border-color) !important;
+        }
+
+        /* Autonomous trigger button */
+        .hover\:bg-purple-50:hover,
+        html.dark .dark\:hover\:bg-purple-900\/20:hover {
+            background-color: var(--bg-hover) !important;
+        }
+
+        /* Message bubbles */
+        .prose.max-w-none.bg-white,
+        html.dark .prose.dark\:bg-gray-800 {
+            background-color: var(--bg-secondary) !important;
+        }
+        .prose.max-w-none.bg-white {
+            background-color: var(--bg-primary) !important;
+        }
+        .prose.max-w-none.bg-white.border-gray-100 {
+            border-color: var(--border-color) !important;
+        }
+
+        /* Typing indicator bubble */
+        .bg-white.dark\:bg-gray-800 {
+            background-color: var(--bg-primary) !important;
+        }
+        .bg-white.dark\:bg-gray-800.border-gray-100 {
+            border-color: var(--border-color) !important;
+        }
+
+        /* Jump to latest button */
+        html.dark .bg-white.dark\:bg-gray-800 {
+            background-color: var(--bg-secondary) !important;
+        }
+        button.bg-white {
+            background-color: var(--bg-primary) !important;
+        }
+        html.dark button.bg-white {
+            background-color: var(--bg-secondary) !important;
+        }
+
+        /* Load more button */
+        button.border-gray-200 {
+            border-color: var(--border-color) !important;
+        }
+        button.bg-white {
+            background-color: var(--bg-primary) !important;
+        }
+
+        /* Input area */
+        .bg-white.dark\:bg-gray-800 {
+            background-color: var(--bg-primary) !important;
+        }
+        .border-gray-200,
+        html.dark .dark\:border-gray-700 {
+            border-color: var(--border-color) !important;
+        }
+        textarea.bg-gray-50,
+        html.dark textarea.dark\:bg-gray-900 {
+            background-color: var(--bg-secondary) !important;
+        }
+
+        /* Modal panels */
+        .bg-white,
+        .ga-modal-panel {
+            background-color: var(--bg-primary) !important;
+        }
+        html.dark .ga-modal-panel {
+            background-color: var(--bg-secondary) !important;
+        }
+        .ga-modal-panel .border-gray-200 {
+            border-color: var(--border-color) !important;
+        }
+        .ga-modal-panel .text-gray-800 {
+            color: var(--text-primary) !important;
+        }
+        html.dark .ga-modal-panel .dark\:text-gray-100 {
+            color: var(--text-primary) !important;
+        }
+
+        /* Model list buttons */
+        .bg-blue-100 {
+            background-color: var(--bg-card) !important;
+        }
+        html.dark .dark\:bg-blue-900\/30 {
+            background-color: rgba(30, 58, 138, 0.3) !important;
+        }
+        .text-blue-700,
+        html.dark .dark\:text-blue-300 {
+            color: #1d4ed8 !important;
+        }
+        html.dark .dark\:text-blue-300 {
+            color: #93c5fd !important;
+        }
+        .text-gray-700 {
+            color: var(--text-primary) !important;
+        }
+
+        /* Text colors */
+        .text-gray-800,
+        html.dark .dark\:text-gray-100 {
+            color: var(--text-primary) !important;
+        }
+        .text-gray-600 {
+            color: var(--text-secondary) !important;
+        }
+        .text-gray-500 {
+            color: var(--text-muted) !important;
+        }
+        .text-gray-400 {
+            color: var(--text-muted) !important;
+        }
+        .text-gray-300 {
+            color: var(--text-muted) !important;
+        }
+        html.dark .dark\:text-gray-200 {
+            color: var(--text-secondary) !important;
+        }
+        html.dark .dark\:text-gray-400 {
+            color: var(--text-muted) !important;
+        }
+
+        /* Autonomous label */
+        .bg-yellow-100 {
+            background-color: #fef9c3 !important;
+        }
+        .text-yellow-800 {
+            color: #854d0e !important;
+        }
+        html.dark .dark\:bg-yellow-900 {
+            background-color: rgba(120, 53, 15, 0.5) !important;
+        }
+        html.dark .dark\:text-yellow-200 {
+            color: #fde047 !important;
+        }
+
+        /* Load more & jump buttons text */
+        button.text-gray-600 {
+            color: var(--text-secondary) !important;
+        }
+        button.text-gray-600:hover {
+            background-color: var(--bg-hover) !important;
+        }
+
+        /* Divider */
+        .bg-gray-200,
+        html.dark .dark\:bg-gray-700 {
+            background-color: var(--border-color) !important;
+        }
+
+        /* User avatar */
+        .bg-blue-100.text-blue-600,
+        html.dark .dark\:bg-blue-900.dark\:text-blue-300 {
+            background-color: var(--bg-card) !important;
+            color: #2563eb !important;
+        }
+        html.dark .dark\:bg-blue-900.dark\:text-blue-300 {
+            background-color: rgba(30, 58, 138, 0.3) !important;
+            color: #93c5fd !important;
+        }
+
+        /* Toggle switch in light mode */
+        html:not(.dark) .bg-gray-300 {
+            background-color: #9ca3af !important;
+        }
+
+        /* Refresh / workspace buttons hover in light mode */
+        .hover\:bg-gray-50:hover {
+            background-color: var(--bg-hover) !important;
+        }
+
+        /* Empty state text */
+        .text-gray-400 {
+            color: var(--text-muted) !important;
+        }
+
+        /* Expand button */
+        .bg-gray-100 {
+            background-color: var(--bg-tertiary) !important;
+        }
+        .bg-gray-100:hover {
+            background-color: var(--bg-hover) !important;
+        }
+
+        /* Copy button in message bubble */
+        .hover\:bg-gray-100:hover,
+        .text-gray-400 {
+            color: var(--text-muted) !important;
+        }
+
+        /* Scrollbar in light mode */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: var(--bg-secondary);
+        }
+        ::-webkit-scrollbar-thumb {
+            background: var(--border-hover);
+            border-radius: 3px;
+        }
+
+        /* Copy button text */
+        button.text-gray-400:hover {
+            color: var(--text-secondary) !important;
+        }
+
+        /* Modal body scroll */
+        .ga-modal-body {
+            background-color: var(--bg-primary) !important;
+        }
+
+        /* Schedule list / todo list items */
+        .border-gray-200 {
+            border-color: var(--border-color) !important;
+        }
+        .bg-white {
+            background-color: var(--bg-primary) !important;
+        }
+        html.dark .bg-white {
+            background-color: var(--bg-secondary) !important;
+        }
+
+        /* Workspace folder items */
+        .hover\:bg-gray-50 {
+            background-color: transparent !important;
+        }
+        .hover\:bg-gray-50:hover {
+            background-color: var(--bg-hover) !important;
+        }
+
+        /* New model button */
+        .bg-blue-600 {
+            background-color: #2563eb !important;
+        }
+        .bg-blue-600:hover {
+            background-color: #1d4ed8 !important;
+        }
+
+        /* Modal panel container */
+        .ga-modal-panel {
+            background-color: var(--bg-primary) !important;
+        }
+        html.dark .ga-modal-panel {
+            background-color: var(--bg-secondary) !important;
+        }
+        .ga-modal-panel * {
+            border-color: var(--border-color) !important;
+        }
+        html.dark .ga-modal-panel * {
+            border-color: var(--border-hover) !important;
+        }
+
+        /* Modal header */
+        .ga-modal-panel .border-b {
+            background-color: var(--bg-secondary) !important;
+        }
+        .ga-modal-panel .font-medium {
+            color: var(--text-primary) !important;
+        }
+
+        /* Modal close button */
+        .ga-modal-panel .hover\:bg-gray-100:hover {
+            background-color: var(--bg-hover) !important;
+        }
+        html.dark .ga-modal-panel .hover\:bg-gray-100:hover {
+            background-color: var(--bg-hover) !important;
+        }
+
+        /* Modal body */
+        .ga-modal-body {
+            background-color: var(--bg-primary) !important;
+        }
+        .ga-modal-body * {
+            color: var(--text-primary) !important;
+        }
+
+        /* Modal form elements - inputs */
+        .ga-modal-panel input[type="text"],
+        .ga-modal-panel input[type="password"],
+        .ga-modal-panel input[type="number"],
+        .ga-modal-panel select,
+        .ga-modal-panel textarea {
+            background-color: var(--bg-secondary) !important;
+            color: var(--text-primary) !important;
+            border-color: var(--border-color) !important;
+        }
+        .ga-modal-panel input[type="text"]:focus,
+        .ga-modal-panel input[type="password"]:focus,
+        .ga-modal-panel input[type="number"]:focus,
+        .ga-modal-panel select:focus,
+        .ga-modal-panel textarea:focus {
+            border-color: var(--border-hover) !important;
+        }
+        html.dark .ga-modal-panel input[type="text"],
+        html.dark .ga-modal-panel input[type="password"],
+        html.dark .ga-modal-panel input[type="number"],
+        html.dark .ga-modal-panel select,
+        html.dark .ga-modal-panel textarea {
+            background-color: var(--bg-tertiary) !important;
+            color: var(--text-primary) !important;
+            border-color: var(--border-hover) !important;
+        }
+
+        /* Modal labels */
+        .ga-modal-panel .text-xs {
+            color: var(--text-muted) !important;
+        }
+
+        /* Modal buttons - unified light gray style */
+        .ga-modal-panel .bg-gray-200,
+        .ga-modal-panel [class*="bg-gray-200"] {
+            background-color: #e5e7eb !important;
+            color: #1f2937 !important;
+        }
+        .ga-modal-panel .hover\:bg-gray-300:hover,
+        .ga-modal-panel [class*="hover\\:bg-gray-300"]:hover {
+            background-color: #d1d5db !important;
+        }
+        html.dark .ga-modal-panel .bg-gray-200,
+        html.dark .ga-modal-panel [class*="bg-gray-200"] {
+            background-color: #374151 !important;
+            color: #e5e7eb !important;
+        }
+        html.dark .ga-modal-panel .hover\:bg-gray-300:hover {
+            background-color: #4b5563 !important;
+        }
+
+        /* Modal - SOP/schedule list panel headers (light: bg-gray-50, dark: bg-gray-900) */
+        .ga-modal-panel .bg-gray-50 {
+            background-color: var(--bg-secondary) !important;
+        }
+        html.dark .ga-modal-panel .dark\:bg-gray-900 {
+            background-color: #111827 !important;
+        }
+        .ga-modal-panel .text-gray-500 {
+            color: var(--text-muted) !important;
+        }
+        html.dark .ga-modal-panel .dark\:text-gray-400 {
+            color: #9ca3af !important;
+        }
+
+        /* Modal - file list hover (hover:bg-gray-100 dark:hover:bg-gray-700) */
+        .ga-modal-panel .hover\:bg-gray-100:hover {
+            background-color: var(--bg-hover) !important;
+        }
+        html.dark .ga-modal-panel .dark\:hover\:bg-gray-700:hover {
+            background-color: #374151 !important;
+        }
+
+        /* Modal - selected item highlight (bg-blue-50 dark:bg-blue-900/20) */
+        .ga-modal-panel .bg-blue-50 {
+            background-color: var(--bg-card) !important;
+        }
+        html.dark .ga-modal-panel .dark\:bg-blue-900\/20 {
+            background-color: rgba(30, 58, 138, 0.3) !important;
+        }
+
+        /* Modal - text colors */
+        .ga-modal-panel .text-gray-700 {
+            color: var(--text-secondary) !important;
+        }
+        .ga-modal-panel .text-gray-800 {
+            color: var(--text-primary) !important;
+        }
+        html.dark .ga-modal-panel .dark\:text-gray-200 {
+            color: #e5e7eb !important;
+        }
+        html.dark .ga-modal-panel .dark\:text-gray-100 {
+            color: #f3f4f6 !important;
+        }
+
+        /* Modal - status text colors */
+        .ga-modal-panel .text-green-700 {
+            color: #15803d !important;
+        }
+        html.dark .ga-modal-panel .dark\:text-green-400 {
+            color: #4ade80 !important;
+        }
+        .ga-modal-panel .text-red-600 {
+            color: #dc2626 !important;
+        }
+        html.dark .ga-modal-panel .dark\:text-red-400 {
+            color: #f87171 !important;
+        }
+
+        /* Modal - toggle switch */
+        .ga-modal-panel .bg-green-500 {
+            background-color: #22c55e !important;
+        }
+        html.dark .ga-modal-panel .dark\:bg-gray-700 {
+            background-color: var(--bg-tertiary) !important;
+        }
+        .ga-modal-panel .bg-gray-300 {
+            background-color: #d1d5db !important;
+        }
+
+        /* Modal - textarea backgrounds */
+        .ga-modal-panel textarea {
+            background-color: var(--bg-secondary) !important;
+        }
+        html.dark .ga-modal-panel .dark\:bg-gray-900 {
+            background-color: #111827 !important;
+        }
+
+        /* Modal - borders */
+        .ga-modal-panel .border {
+            border-color: var(--border-color) !important;
+        }
+        html.dark .ga-modal-panel .dark\:border-gray-700 {
+            border-color: #374151 !important;
+        }
+
+        /* Modal - schedule toggle area */
+        .ga-modal-panel .border-b {
+            border-color: var(--border-color) !important;
+        }
+
+        /* Model list - key button (now unified gray bg) */
+        .ga-modal-panel .bg-gray-200 {
+            background-color: #e5e7eb !important;
+        }
+        .ga-modal-panel .hover\:bg-gray-300:hover {
+            background-color: #d1d5db !important;
+        }
+        .ga-modal-panel .text-gray-700 {
+            color: #374151 !important;
+        }
+        html.dark .ga-modal-panel .dark\:bg-gray-700 {
+            background-color: #374151 !important;
+        }
+        html.dark .ga-modal-panel .dark\:hover\:bg-gray-600:hover {
+            background-color: #4b5563 !important;
+        }
+        html.dark .ga-modal-panel .dark\:text-gray-200 {
+            color: #e5e7eb !important;
+        }
+
+        /* Model list - active model bg (bg-blue-100 dark:bg-blue-900/30) */
+        .ga-modal-panel .bg-blue-100 {
+            background-color: #dbeafe !important;
+        }
+        html.dark .ga-modal-panel .dark\:bg-blue-900\/30 {
+            background-color: rgba(30, 58, 138, 0.4) !important;
+        }
+
+        /* Model list - model text */
+        .ga-modal-panel .text-blue-700 {
+            color: #1d4ed8 !important;
+        }
+        html.dark .ga-modal-panel .dark\:text-blue-300 {
+            color: #93c5fd !important;
+        }
+
+        /* Modal - blue outline buttons */
+        .ga-modal-panel .border-blue-800 {
+            border-color: #1e40af !important;
+        }
+
+        /* Modal - key editor section */
+        .ga-modal-panel #ga-key-editor {
+            background-color: var(--bg-secondary) !important;
+            border-color: var(--border-color) !important;
+        }
+        html.dark .ga-modal-panel #ga-key-editor {
+            background-color: var(--bg-tertiary) !important;
+            border-color: var(--border-hover) !important;
+        }
+
+        /* Sidebar threshold select */
+        .antialiased .border {
+            border-color: var(--border-color) !important;
+        }
+        .antialiased input,
+        .antialiased select,
+        .antialiased textarea {
+            background-color: var(--bg-secondary) !important;
+            color: var(--text-primary) !important;
+        }
+
+        /* Sidebar links hover in light mode */
+        html:not(.dark) .hover\:bg-gray-100:hover {
+            background-color: var(--bg-hover) !important;
+        }
+        /* Sidebar links active text */
+        html:not(.dark) .text-gray-700 {
+            color: var(--text-secondary) !important;
+        }
+
+        /* Autonomous label in dark mode */
+        html.dark .dark\:bg-yellow-900 {
+            background-color: rgba(113, 63, 18, 0.5) !important;
+        }
+        html.dark .dark\:text-yellow-200 {
+            color: #fde047 !important;
+        }
+
+        /* Sidebar status indicator text */
+        html:not(.dark) .text-blue-600 {
+            color: #2563eb !important;
+        }
     </style>
 </head>
 <body class="bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-100 font-sans antialiased h-screen overflow-hidden">
@@ -178,9 +869,9 @@
             <div class="p-4 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between h-14">
                 <div class="flex items-center gap-2 min-w-0">
                     <img src="logo_square.png" class="w-8 h-8 rounded-md" alt="Logo">
-                    <h1 class="min-w-0 text-xl font-bold bg-gradient-to-r from-blue-500 to-purple-600 bg-clip-text text-transparent truncate">GenericAgent</h1>
+                    <h1 class="min-w-0 text-xl font-bold bg-gradient-to-r from-blue-500 to-purple-600 bg-clip-text text-transparent truncate">A3Agent</h1>
                 </div>
-                <button id="themeToggle" type="button" class="shrink-0 p-1.5 rounded-md border border-gray-200 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-200" title="主题：浅色（点击切换）"></button>
+                <button id="themeToggle" type="button" @click="toggleTheme" class="shrink-0 p-1.5 rounded-md border border-gray-200 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-200" title="主题：浅色（点击切换）"></button>
                 <button @click="sidebarOpen = false" class="md:hidden text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200">
                     <i data-lucide="x" class="w-5 h-5"></i>
                 </button>
@@ -399,18 +1090,18 @@
                         <div class="space-y-3">
                             <div class="flex items-center justify-between">
                                 <div class="text-sm text-gray-500 dark:text-gray-400">点击模型切换；点钥匙配置该模型的 Key（默认不展示 Key）</div>
-                                <button @click="startNewModel" class="px-3 py-2 text-sm rounded-md bg-blue-600 text-white hover:bg-blue-700">新增模型</button>
+                                <button @click="startNewModel" class="px-3 py-2 text-sm rounded-md bg-gray-200 text-gray-800 hover:bg-gray-300">新增模型</button>
                             </div>
 
                             <div class="space-y-2">
                                 <div v-for="(model, idx) in status.llm_list" :key="idx" class="flex items-center gap-2">
                                     <button @click="switchLLM(model[0]); closeModal()" 
                                         class="flex-1 flex items-center gap-2 px-3 py-2 text-sm rounded-md transition-colors text-left"
-                                        :class="model[2] ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300 font-medium' : 'text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:bg-gray-700 dark:hover:bg-gray-700'">
+                                        :class="model[2] ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300 font-medium' : 'text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700'">
                                         <i :data-lucide="model[2] ? 'check-circle' : 'circle'" class="w-4 h-4 shrink-0"></i>
                                         <span class="truncate">{{ model[1] }}</span>
                                     </button>
-                                    <button v-if="model[3]" @click.stop="openKeyEditor(model[3])" class="p-2 rounded-md border border-gray-200 dark:border-gray-700 hover:bg-gray-100 dark:bg-gray-700 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-200">
+                                    <button v-if="model[3]" @click.stop="openKeyEditor(model[3])" class="p-2 rounded-md bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200">
                                         <i data-lucide="key" class="w-4 h-4"></i>
                                     </button>
                                 </div>
@@ -446,9 +1137,9 @@
                                 <div v-if="keyEditorError" class="text-sm text-red-600 dark:text-red-400">{{ keyEditorError }}</div>
 
                                 <div class="flex items-center justify-end gap-2 pt-1">
-                                    <button @click="closeKeyEditor" class="px-3 py-2 text-sm rounded-md bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-100 hover:bg-gray-300 dark:hover:bg-gray-600">取消</button>
+                                    <button @click="closeKeyEditor" class="px-3 py-2 text-sm rounded-md bg-gray-200 hover:bg-gray-300 text-gray-800 dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-100 transition-colors">取消</button>
                                     <button v-if="editingConfigId" @click="deleteConfig" class="px-3 py-2 text-sm rounded-md bg-red-600 text-white hover:bg-red-700">删除</button>
-                                    <button @click="testKeyEditor" :disabled="keyEditorBusy" :class="keyEditorBusy ? 'opacity-60 cursor-not-allowed' : ''" class="px-3 py-2 text-sm rounded-md bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-100 hover:bg-gray-300 dark:hover:bg-gray-600">测试 API</button>
+                                    <button @click="testKeyEditor" :disabled="keyEditorBusy" :class="keyEditorBusy ? 'opacity-60 cursor-not-allowed' : ''" class="px-3 py-2 text-sm rounded-md bg-gray-200 hover:bg-gray-300 text-gray-800 dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-100 transition-colors">测试 API</button>
                                     <button @click="saveKeyEditor" :disabled="!keyEditorTestOk || keyEditorBusy" :class="(!keyEditorTestOk || keyEditorBusy) ? 'bg-gray-400 hover:bg-gray-400 cursor-not-allowed opacity-70' : 'bg-blue-600 hover:bg-blue-700'" class="px-3 py-2 text-sm rounded-md text-white">保存并重载</button>
                                 </div>
                             </div>
@@ -464,13 +1155,13 @@
                                 <select v-model="workspaceSelected" class="flex-1 bg-transparent text-gray-800 dark:text-gray-100 border border-gray-300 dark:border-gray-700 rounded px-2 py-2 text-sm focus:outline-none">
                                     <option v-for="p in workspaceOptions" :key="p" :value="p">{{ p }}</option>
                                 </select>
-                                <button @click="fetchWorkspaceOptions" class="px-3 py-2 text-sm rounded-md bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-100 hover:bg-gray-300 dark:hover:bg-gray-600">刷新</button>
+                                <button @click="fetchWorkspaceOptions" class="px-3 py-2 text-sm rounded-md bg-gray-200 hover:bg-gray-300 text-gray-800 dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-100 transition-colors">刷新</button>
                             </div>
                             <div class="text-xs text-gray-400">
                                 当前：{{ workspacePath || '未设置' }}
                             </div>
                             <div class="flex items-center justify-end gap-2">
-                                <button @click="setWorkspace" class="px-3 py-2 text-sm rounded-md bg-blue-600 text-white hover:bg-blue-700">应用</button>
+                                <button @click="setWorkspace" class="px-3 py-2 text-sm rounded-md bg-gray-200 text-gray-800 hover:bg-gray-300">应用</button>
                             </div>
                         </div>
                     </template>
@@ -498,10 +1189,10 @@
                                 <div class="px-3 py-2 text-xs font-semibold text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
                                     <span class="truncate">{{ selectedSop || '未选择' }}</span>
                                     <div class="flex items-center gap-2">
-                                        <button v-if="selectedSop && !sopEditMode" @click="startEditSop" class="text-xs px-2 py-1 rounded bg-blue-600 text-white hover:bg-blue-700">编辑</button>
+                                        <button v-if="selectedSop && !sopEditMode" @click="startEditSop" class="text-xs px-2 py-1 rounded bg-gray-200 text-gray-800 hover:bg-gray-300">编辑</button>
                                         <button v-if="selectedSop && sopEditMode" @click="saveSop" class="text-xs px-2 py-1 rounded bg-blue-600 text-white hover:bg-blue-700">保存</button>
-                                        <button v-if="selectedSop && sopEditMode" @click="cancelEditSop" class="text-xs px-2 py-1 rounded bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-100 hover:bg-gray-300 dark:hover:bg-gray-600">取消</button>
-                                        <button v-if="selectedSop && !sopEditMode" @click="reloadSop" class="text-xs px-2 py-1 rounded bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-100 hover:bg-gray-300 dark:hover:bg-gray-600">刷新</button>
+                                        <button v-if="selectedSop && sopEditMode" @click="cancelEditSop" class="text-xs px-2 py-1 rounded bg-gray-200 hover:bg-gray-300 text-gray-800 dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-100 transition-colors">取消</button>
+                                        <button v-if="selectedSop && !sopEditMode" @click="reloadSop" class="text-xs px-2 py-1 rounded bg-gray-200 hover:bg-gray-300 text-gray-800 dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-100 transition-colors">刷新</button>
                                     </div>
                                 </div>
                                 <div class="p-3 max-h-[55vh] overflow-auto">
@@ -538,7 +1229,7 @@
                                 <div class="md:col-span-1 border border-gray-200 dark:border-gray-700 rounded-md overflow-hidden">
                                     <div class="px-3 py-2 text-xs font-semibold text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
                                         <span>任务</span>
-                                        <button @click="newScheduleTask" class="text-xs px-2 py-1 rounded bg-blue-600 text-white hover:bg-blue-700">新建</button>
+                                        <button @click="newScheduleTask" class="text-xs px-2 py-1 rounded bg-gray-200 text-gray-800 hover:bg-gray-300">新建</button>
                                     </div>
                                     <div class="max-h-[55vh] overflow-auto">
                                         <div class="px-3 py-2 text-xs font-semibold text-gray-400">pending</div>
@@ -555,7 +1246,7 @@
                                         <div class="flex items-center gap-2">
                                             <button v-if="selectedScheduleBucket" @click="saveSchedule" class="text-xs px-2 py-1 rounded bg-blue-600 text-white hover:bg-blue-700">保存</button>
                                             <button v-if="selectedScheduleBucket" @click="deleteSchedule" class="text-xs px-2 py-1 rounded bg-red-600 text-white hover:bg-red-700">删除</button>
-                                            <button @click="refreshScheduleList" class="text-xs px-2 py-1 rounded bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-100 hover:bg-gray-300 dark:hover:bg-gray-600">刷新</button>
+                                            <button @click="refreshScheduleList" class="text-xs px-2 py-1 rounded bg-gray-200 hover:bg-gray-300 text-gray-800 dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-100 transition-colors">刷新</button>
                                         </div>
                                     </div>
                                     <div class="p-3 space-y-2">
@@ -624,84 +1315,6 @@
         }
     </script>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-    <script src="app.js?v=11"></script>
-    <script>
-        (function () {
-            const STORAGE_KEY = 'ga_theme';
-            const btn = document.getElementById('themeToggle');
-            if (!btn) return;
-
-            const getPrefersDark = () => {
-                try {
-                    return !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
-                } catch (e) {
-                    return false;
-                }
-            };
-
-            const apply = (mode) => {
-                const html = document.documentElement;
-                const isDark = mode === 'dark' || (mode === 'system' && getPrefersDark());
-                const body = document.body;
-                if (isDark) {
-                    html.classList.add('dark');
-                    if (body) body.classList.add('dark');
-                } else {
-                    html.classList.remove('dark');
-                    if (body) body.classList.remove('dark');
-                }
-                html.style.colorScheme = isDark ? 'dark' : 'light';
-            };
-
-            const normalize = (v) => (v === 'light' || v === 'dark' || v === 'system') ? v : 'light';
-
-            const readMode = () => {
-                try {
-                    return normalize(localStorage.getItem(STORAGE_KEY) || 'light');
-                } catch (e) {
-                    return 'light';
-                }
-            };
-
-            const writeMode = (v) => {
-                try {
-                    localStorage.setItem(STORAGE_KEY, v);
-                } catch (e) {
-                }
-            };
-
-            const nextMode = (v) => v === 'system' ? 'light' : (v === 'light' ? 'dark' : 'system');
-
-            const labelFor = (v) => {
-                if (v === 'light') return '主题：浅色（点击切换）';
-                if (v === 'dark') return '主题：深色（点击切换）';
-                return '主题：跟随系统（点击切换）';
-            };
-
-            const iconFor = (v) => {
-                if (v === 'light') return 'sun';
-                if (v === 'dark') return 'moon';
-                return 'monitor';
-            };
-
-            const render = (v) => {
-                btn.title = labelFor(v);
-                btn.innerHTML = '<i data-lucide="' + iconFor(v) + '" class="w-4 h-4"></i>';
-                if (window.lucide) lucide.createIcons();
-            };
-
-            const setMode = (v) => {
-                const mode = normalize(v);
-                writeMode(mode);
-                apply(mode);
-                render(mode);
-            };
-
-            setMode(readMode());
-            btn.addEventListener('click', () => {
-                setMode(nextMode(readMode()));
-            });
-        })();
-    </script>
+    <script src="app.js?v=12"></script>
 </body>
 </html>

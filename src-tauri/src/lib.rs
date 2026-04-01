@@ -1,11 +1,41 @@
 use std::process::{Command, Stdio};
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
+use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 use std::path::{Path, PathBuf};
 use tauri::{Emitter, Manager};
 use tauri_plugin_shell::ShellExt;
 use tauri_plugin_shell::process::CommandEvent;
+
+/// 将 PathBuf 转为普通字符串，去掉 Windows \\?\ UNC 前缀
+fn path_to_str(path: &Path) -> String {
+    let s = path.to_string_lossy();
+    // 去掉 Windows 扩展路径前缀 \\?\  避免与正斜杠路径拼接时出错
+    if let Some(stripped) = s.strip_prefix(r"\\?\") {
+        stripped.to_string()
+    } else {
+        s.to_string()
+    }
+}
+
+/// 全局状态：存储 python-backend 子进程的 PID
+struct BackendPid(Mutex<Option<u32>>);
+
+fn log(msg: &str) {
+    println!("[A3Agent] {}", msg);
+    let path = std::env::temp_dir().join("a3agent_startup.log");
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = writeln!(f, "[A3Agent] {}", msg);
+    }
+}
+
+fn python_log(line: &str) {
+    let path = std::env::temp_dir().join("python_backend.log");
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = writeln!(f, "{}", line);
+    }
+}
 
 fn emit_ui_state_from_log(app_handle: &tauri::AppHandle, line: &str) {
     let Some(rest) = line.strip_prefix("[Status] broadcast state=") else {
@@ -60,7 +90,13 @@ fn toggle_main_window(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+fn exit_app(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
 fn find_python_backend_dir(resource_dir: &Path) -> Option<PathBuf> {
+    // 首先尝试查找开发环境的 python-backend 目录
     let from_resource_dir = resource_dir.join("python-backend");
     if from_resource_dir.join("headless_main.py").exists() {
         return Some(from_resource_dir);
@@ -77,7 +113,9 @@ fn find_python_backend_dir(resource_dir: &Path) -> Option<PathBuf> {
         }
     }
 
-    None
+    // 如果找不到开发环境，返回 resource_dir 作为后备
+    // 这样在使用 sidecar 时，可以从 resource_dir 查找
+    Some(resource_dir.to_path_buf())
 }
 
 fn find_external_frontend_dir(python_backend_dir: &Path) -> Option<PathBuf> {
@@ -102,16 +140,20 @@ fn is_project_root(path: &Path) -> bool {
 }
 
 fn detect_workspace_root(resource_dir: &Path, python_backend_dir: &Path) -> PathBuf {
+    // 在release构建中，优先使用exe所在目录
+    if !cfg!(debug_assertions) {
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(parent) = exe.parent() {
+                return parent.to_path_buf();
+            }
+        }
+    }
+
+    // 在开发模式下，查找项目根目录
     if let Ok(exe) = std::env::current_exe() {
         for ancestor in exe.ancestors() {
             if is_project_root(ancestor) {
                 return ancestor.to_path_buf();
-            }
-        }
-
-        if !cfg!(debug_assertions) {
-            if let Some(parent) = exe.parent() {
-                return parent.to_path_buf();
             }
         }
     }
@@ -136,6 +178,22 @@ fn detect_workspace_root(resource_dir: &Path, python_backend_dir: &Path) -> Path
         .unwrap_or_else(|| resource_dir.to_path_buf())
 }
 
+fn kill_process_by_pid(pid: u32) {
+    log(&format!("Killing python-backend process (pid={})", pid));
+    #[cfg(target_os = "windows")]
+    {
+        let _ = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/F", "/T"])
+            .spawn();
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = Command::new("kill")
+            .args(["-TERM", &pid.to_string()])
+            .spawn();
+    }
+}
+
 fn spawn_python_backend(
     headless_main: &Path,
     python_backend_dir: &Path,
@@ -158,7 +216,7 @@ fn spawn_python_backend(
             .arg(headless_main)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .env("GA_APP_NAME", "GenericAgent")
+            .env("GA_APP_NAME", "A3Agent")
             .env("GA_BASE_DIR", python_backend_dir);
         if let Some(dir) = frontend_dir {
             command.env("GA_FRONTEND_DIR", dir);
@@ -180,6 +238,36 @@ fn spawn_python_backend(
         }
     }
 
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            let portable_backend = exe_dir.join("python-backend.exe");
+            if portable_backend.exists() {
+                log(&format!("Trying portable python-backend.exe at {:?}", portable_backend));
+                let mut cmd = Command::new(&portable_backend);
+                if let Some(dir) = frontend_dir {
+                    cmd.env("GA_FRONTEND_DIR", dir);
+                }
+                if let Some(dir) = workspace_root {
+                    cmd.env("GA_WORKSPACE_ROOT", dir);
+                }
+                cmd.env("GA_CONFIG_DIRNAME", "ga_config");
+                if let Some(dir) = user_data_dir {
+                    cmd.env("GA_USER_DATA_DIR", dir);
+                }
+                if let Some(dir) = app_data_dir {
+                    cmd.env("GA_APP_DATA_DIR", dir);
+                }
+                match cmd.env("GA_BASE_DIR", exe_dir).spawn() {
+                    Ok(child) => return Ok(child),
+                    Err(e) => {
+                        log(&format!("Portable python-backend.exe failed: {}", e));
+                        last_err = Some(e);
+                    }
+                }
+            }
+        }
+    }
+
     Err(last_err.unwrap_or_else(|| std::io::Error::other("failed to spawn python process")))
 }
 
@@ -188,7 +276,9 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
+        .manage(BackendPid(Mutex::new(None)))
         .setup(|app| {
+            log("setup() started");
             let app_handle = app.handle().clone();
 
             let tray_icon = {
@@ -205,7 +295,7 @@ pub fn run() {
                 tauri::tray::TrayIconBuilder::new()
                     .menu(&menu)
                     .icon(icon)
-                    .tooltip("GA")
+                    .tooltip("A3Agent")
                     .on_menu_event(move |app, event| {
                         if event.id().as_ref() == "quit" {
                             app.exit(0);
@@ -218,6 +308,7 @@ pub fn run() {
                     .build(&handle)?
             };
             std::mem::forget(tray_icon);
+            log("tray icon created");
 
             {
                 let _ = tauri::WebviewWindowBuilder::new(
@@ -225,7 +316,7 @@ pub fn run() {
                     "floating",
                     tauri::WebviewUrl::App("floating.html".into()),
                 )
-                .title("GA")
+                .title("A3Agent")
                 .transparent(true)
                 .decorations(false)
                 .always_on_top(true)
@@ -233,25 +324,61 @@ pub fn run() {
                 .resizable(false)
                 .position(20.0, 120.0)
                 .inner_size(72.0, 72.0)
+                .visible_on_all_workspaces(true)
+                .shadow(false)
                 .build();
+                log("floating window created");
             }
-            
-            let resource_dir = app.path().resource_dir().expect("failed to get resource dir");
-            let python_backend_dir =
-                find_python_backend_dir(&resource_dir).expect("failed to find python-backend directory");
 
-            let app_data_dir = app.path().app_data_dir().expect("failed to get app data dir");
+            let resource_dir = match app.path().resource_dir() {
+                Ok(dir) => dir,
+                Err(e) => {
+                    log(&format!("ERROR: failed to get resource dir: {}", e));
+                    eprintln!("ERROR: failed to get resource dir: {}", e);
+                    return Err(e.into());
+                }
+            };
+            log(&format!("resource_dir: {:?}", resource_dir));
+
+            let python_backend_dir = match find_python_backend_dir(&resource_dir) {
+                Some(dir) => dir,
+                None => {
+                    let msg = format!("ERROR: Cannot find python-backend directory. Searched in:\n  - {:?}/python-backend\n  - Parent directories of exe", resource_dir);
+                    log(&msg);
+                    eprintln!("{}", msg);
+                    return Err(msg.into());
+                }
+            };
+            log(&format!("python_backend_dir: {:?}", python_backend_dir));
+
+            let app_data_dir = match app.path().app_data_dir() {
+                Ok(dir) => dir,
+                Err(e) => {
+                    log(&format!("ERROR: failed to get app data dir: {}", e));
+                    return Err(e.into());
+                }
+            };
+            log(&format!("app_data_dir: {:?}", app_data_dir));
             if !app_data_dir.exists() {
-                std::fs::create_dir_all(&app_data_dir).expect("failed to create app data dir");
+                if let Err(e) = std::fs::create_dir_all(&app_data_dir) {
+                    log(&format!("ERROR: failed to create app data dir: {}", e));
+                    return Err(e.into());
+                }
             }
             let workspace_root = detect_workspace_root(&resource_dir, &python_backend_dir);
+            log(&format!("workspace_root: {:?}", workspace_root));
             if !workspace_root.exists() {
-                std::fs::create_dir_all(&workspace_root).expect("failed to create workspace root");
+                if let Err(e) = std::fs::create_dir_all(&workspace_root) {
+                    log(&format!("WARN: failed to create workspace root: {}", e));
+                }
             }
             let user_data_dir = workspace_root.join("ga_config");
             if !user_data_dir.exists() {
-                std::fs::create_dir_all(&user_data_dir).expect("failed to create default config dir");
+                if let Err(e) = std::fs::create_dir_all(&user_data_dir) {
+                    log(&format!("WARN: failed to create config dir: {}", e));
+                }
             }
+            log("dirs setup done");
             let headless_main = python_backend_dir.join("headless_main.py");
             let resource_frontend_dir = {
                 let candidate = resource_dir.join("frontend");
@@ -270,32 +397,38 @@ pub fn run() {
                 .as_deref()
                 .unwrap_or_else(|| resource_dir.as_path());
 
-            let sidecar = if cfg!(debug_assertions) {
-                None
-            } else {
-                Some(
-                    app_handle
-                        .shell()
-                        .sidecar("python-backend")
-                        .or_else(|_| app_handle.shell().sidecar("bin/python-backend")),
-                )
-            };
+            let sidecar = app_handle
+                .shell()
+                .sidecar("python-backend")
+                .or_else(|_| app_handle.shell().sidecar("binaries/python-backend"));
 
             match sidecar {
-                Some(Ok(sidecar_command)) => {
+                Ok(sidecar_command) => {
+                    log("Using bundled Python backend (sidecar)");
                     let sidecar_command = sidecar_command
                         .args(["0"])
-                        .env("GA_APP_NAME", "GenericAgent")
-                        .env("GA_BASE_DIR", python_backend_dir.to_string_lossy().to_string())
-                        .env("GA_FRONTEND_DIR", frontend_dir.to_string_lossy().to_string())
-                        .env("GA_WORKSPACE_ROOT", ws_dir.to_string_lossy().to_string())
+                        .env("GA_APP_NAME", "A3Agent")
+                        .env("GA_BASE_DIR", path_to_str(&python_backend_dir))
+                        .env("GA_FRONTEND_DIR", path_to_str(frontend_dir))
+                        .env("GA_WORKSPACE_ROOT", path_to_str(ws_dir))
                         .env("GA_CONFIG_DIRNAME", "ga_config")
-                        .env("GA_USER_DATA_DIR", ud_dir.to_string_lossy().to_string())
-                        .env("GA_APP_DATA_DIR", ad_dir.to_string_lossy().to_string());
+                        .env("GA_USER_DATA_DIR", path_to_str(ud_dir))
+                        .env("GA_APP_DATA_DIR", path_to_str(ad_dir));
 
-                    let (mut rx, _child) = sidecar_command
-                        .spawn()
-                        .expect("Failed to spawn sidecar process");
+                    let (mut rx, child) = match sidecar_command.spawn() {
+                        Ok(result) => result,
+                        Err(e) => {
+                            let msg = format!("ERROR: Failed to spawn sidecar process: {}", e);
+                            log(&msg);
+                            eprintln!("{}", msg);
+                            return Err(msg.into());
+                        }
+                    };
+
+                    // 将 child 的 PID 存入全局状态，退出时通过 RunEvent::Exit kill
+                    if let Ok(mut guard) = app_handle.state::<BackendPid>().0.lock() {
+                        *guard = Some(child.pid());
+                    }
 
                     tauri::async_runtime::spawn(async move {
                         let mut last_port: Option<String> = None;
@@ -305,6 +438,7 @@ pub fn run() {
                                     let chunk = String::from_utf8_lossy(&bytes);
                                     for line in chunk.lines() {
                                         println!("Backend: {}", line);
+                                        python_log(line);
                                         emit_ui_state_from_log(&app_handle, line);
                                         if line.starts_with("PORT:") {
                                             let port = line.replace("PORT:", "").trim().to_string();
@@ -312,12 +446,17 @@ pub fn run() {
                                                 continue;
                                             }
                                             last_port = Some(port.clone());
+                                            println!("Backend API available at: http://127.0.0.1:{}/", port);
+                                            // Emit backend port via Tauri event system
+                                            let port_num: u16 = port.parse().unwrap_or(0);
+                                            let _ = app_handle.emit("backend-port", port_num);
+                                            // Also inject directly in case window is already ready
                                             if let Some(window) = app_handle.get_webview_window("main") {
-                                                let url = format!("http://127.0.0.1:{}/", port);
-                                                println!("Navigating to {}", url);
-                                                if let Ok(url) = tauri::Url::parse(&url) {
-                                                    let _ = window.navigate(url);
-                                                }
+                                                let js = format!("window.__BACKEND_PORT__ = {}; window.dispatchEvent(new CustomEvent('backendReady', {{detail: {}}}));", port, port);
+                                                let _ = window.eval(&js);
+                                                thread::sleep(Duration::from_millis(500));
+                                                let _ = window.show();
+                                                let _ = window.set_focus();
                                             }
                                         }
                                     }
@@ -333,16 +472,38 @@ pub fn run() {
                         }
                     });
                 }
-                _ => {
-                    let mut child = spawn_python_backend(
+                Err(e) => {
+                    log(&format!("Sidecar not available ({}), falling back to system Python", e));
+                    log("Attempting to spawn Python backend directly...");
+                    let mut child = match spawn_python_backend(
                         &headless_main,
                         &python_backend_dir,
                         Some(frontend_dir),
                         Some(ws_dir),
                         Some(ud_dir),
                         Some(ad_dir),
-                    )
-                    .expect("Failed to spawn python process");
+                    ) {
+                        Ok(child) => child,
+                        Err(e) => {
+                            let msg = format!(
+                                "ERROR: Failed to spawn Python process: {}\n\n\
+                                请确保:\n\
+                                1. 系统已安装 Python 3.8 或更高版本\n\
+                                2. Python 已添加到系统 PATH 环境变量\n\
+                                3. 已安装所需的 Python 依赖包\n\n\
+                                可以在命令行运行 'python --version' 检查 Python 是否正确安装",
+                                e
+                            );
+                            log(&msg);
+                            eprintln!("{}", msg);
+                            return Err(msg.into());
+                        }
+                    };
+
+                    // 保存子进程 PID，退出时通过 RunEvent::Exit kill
+                    if let Ok(mut guard) = app_handle.state::<BackendPid>().0.lock() {
+                        *guard = Some(child.id());
+                    }
 
                     let stdout = child.stdout.take().expect("Failed to open stdout");
                     let stderr = child.stderr.take().expect("Failed to open stderr");
@@ -352,18 +513,17 @@ pub fn run() {
                         for line in reader.lines() {
                             if let Ok(line) = line {
                                 println!("Python: {}", line);
+                                python_log(&line);
                                 emit_ui_state_from_log(&app_handle, &line);
                                 if line.starts_with("PORT:") {
                                     let port = line.replace("PORT:", "").trim().to_string();
+                                    println!("Backend API available at: http://127.0.0.1:{}/", port);
                                     if let Some(window) = app_handle.get_webview_window("main") {
-                                        let url = format!("http://127.0.0.1:{}/", port);
-                                        println!("Navigating to {}", url);
-                                        if let Ok(url) = tauri::Url::parse(&url) {
-                                            for _ in 0..5 {
-                                                let _ = window.navigate(url.clone());
-                                                thread::sleep(Duration::from_millis(500));
-                                            }
-                                        }
+                                        let js = format!("window.__BACKEND_PORT__ = {}; window.dispatchEvent(new CustomEvent('backendReady', {{detail: {}}}));", port, port);
+                                        let _ = window.eval(&js);
+                                        thread::sleep(Duration::from_millis(300));
+                                        let _ = window.show();
+                                        let _ = window.set_focus();
                                     }
                                 }
                             }
@@ -423,9 +583,19 @@ pub fn run() {
                 }
             });
 
+            log("setup() completed successfully");
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![greet, toggle_main_window])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .invoke_handler(tauri::generate_handler![greet, toggle_main_window, exit_app])
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            if let tauri::RunEvent::Exit = event {
+                if let Ok(guard) = app_handle.state::<BackendPid>().0.lock() {
+                    if let Some(pid) = *guard {
+                        kill_process_by_pid(pid);
+                    }
+                }
+            }
+        });
 }

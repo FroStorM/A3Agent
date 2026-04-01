@@ -1,5 +1,10 @@
 import threading, sys, time, os, atexit, socket, runpy
 
+# 初始化配置文件 - 必须在导入其他模块之前完成
+from config_manager import initialize_workspace_config
+workspace_root = initialize_workspace_config()
+# 环境变量已在initialize_workspace_config中设置
+
 def find_free_port():
     sock = socket.socket()
     try:

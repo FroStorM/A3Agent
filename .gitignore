@@ -7,12 +7,13 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
-node_modules
-dist
-dist-ssr
+# Node
+node_modules/
+dist/
+dist-ssr/
 *.local
 
-# Editor directories and files
+# Editor
 .vscode/*
 !.vscode/extensions.json
 .idea
@@ -22,18 +23,41 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# API keys / sensitive configs
 ga_config/
 mykey.json
+python-backend/mykey.json
 
-# 构建产物
-src-tauri/
-target/
-temp/
-node_modules/
-__pycache__/
+# Python build artifacts
+python-backend/build/
+python-backend/dist/
+python-backend/__pycache__/
+python-backend/chatapp/__pycache__/
+**/__pycache__/
 *.pyc
 *.pyo
 *.pyd
-.Python
 *.so
 *.dylib
+
+# Runtime / temp data
+temp/
+python-backend/temp/
+python-backend/memory/global_mem.txt
+python-backend/memory/global_mem_insight.txt
+python-backend/memory/history.txt
+python-backend/memory/history.md
+python-backend/memory/Insight.md
+python-backend/memory/skill_search/
+
+# Tauri build artifacts (keep source)
+src-tauri/target/
+src-tauri/binaries/
+src-tauri/gen/
+
+# Distribution zips
+*.zip
+
+# Portable build output
+A3Agent-Portable/

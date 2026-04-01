@@ -2,7 +2,7 @@
 
 ## Task Mode 文件IO协议
 
-- 目录：`temp/{task_name}/`（相对代码根GenericAgent/），主agent cwd在temp/时即 `./{task_name}/`
+- 目录：`temp/{task_name}/`（相对代码根A3Agent/），主agent cwd在temp/时即 `./{task_name}/`
 - 启动：`python agentmain.py --task {task_name} [--llm_no N]`（cwd=代码根），其中agentmain.py位于代码根目录
 - 流程：写 input.txt → 启动 → 轮询 output.txt → 读回复 → 写 reply.txt 继续 → 不写则5min自动退出
 - input.txt原则：写目标+约束，可指定SOP名。禁写具体实现步骤——除非主agent已读过该SOP确认正确。凭印象猜的步骤会误导subagent

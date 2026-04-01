@@ -4,6 +4,41 @@
 
 A3Agent 是一个基于 Tauri 框架构建的桌面智能体应用，集成了 Python 后端服务、Web 前端界面和浏览器自动化能力。应用支持多模型 LLM 对话、网页自动化操作、任务计划调度和 SOP 自动化执行。
 
+## ⚠️ 重要提示：关于 exe 闪退问题
+
+如果打包后的 exe 文件运行时闪退，请查看 [BUILD_GUIDE.md](BUILD_GUIDE.md) 获取详细的问题诊断和解决方案。
+
+**快速检查清单：**
+1. ✅ 系统已安装 Python 3.8+ 并添加到 PATH
+2. ✅ 已安装 Python 依赖：`pip install -r python-backend/requirements.txt`
+3. ✅ 查看启动日志：Windows 用户运行 `type %TEMP%\a3agent_startup.log`
+
+**最新改进：**
+- ✅ 已添加详细的错误日志记录
+- ✅ 已优化资源路径查找逻辑
+- ✅ 已改进错误提示信息
+- ✅ 已创建 .taurignore 优化打包体积
+- ✅ 已修复窗口闪烁问题
+- ✅ 支持打包为独立可执行文件（无需 Python 环境）
+
+## 🎯 快速开始
+
+### 创建独立可运行的安装包
+
+```powershell
+# 一键打包（包含完整 Python 环境）
+pip install -r python-backend/requirements.txt
+.\build_standalone.ps1
+```
+
+详见：[QUICKSTART.md](QUICKSTART.md) | [STANDALONE_BUILD.md](STANDALONE_BUILD.md)
+
+### 开发模式
+
+```bash
+npm run tauri dev
+```
+
 ---
 
 ## 目录结构
@@ -156,7 +191,7 @@ A3Agent/
 **主要类和函数**:
 | 名称 | 类型 | 功能 |
 |------|------|------|
-| `GenericAgentHandler` | 类 | 工具实现，包含 file_*/web_*/code_run 等 |
+| `A3AgentHandler` | 类 | 工具实现，包含 file_*/web_*/code_run 等 |
 | `code_run()` | 生成器函数 | 代码执行器（Python/PowerShell/Bash） |
 | `ask_user()` | 函数 | 请求用户输入 |
 | `web_scan()` | 函数 | 获取网页简化 HTML |

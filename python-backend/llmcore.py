@@ -3,15 +3,25 @@ from datetime import datetime
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
+def _get_model_log_dir():
+    log_dir = os.environ.get("GA_USER_DATA_DIR")
+    if not log_dir:
+        log_dir = os.environ.get("GA_BASE_DIR") or os.path.dirname(os.path.abspath(__file__))
+    log_dir = os.path.join(log_dir, "temp")
+    os.makedirs(log_dir, exist_ok=True)
+    return log_dir
+
 def get_resource_path(relative_path):
-    try:
-        base_path = sys._MEIPASS
-    except Exception:
-        base_path = os.path.abspath(os.path.dirname(__file__))
-    return os.path.join(base_path, relative_path)
+    base = os.environ.get("GA_BASE_DIR")
+    if not base:
+        try:
+            base = sys._MEIPASS
+        except Exception:
+            base = os.path.abspath(os.path.dirname(__file__))
+    return os.path.join(base, relative_path)
 
 def _default_app_root_dir():
-    app_name = os.environ.get("GA_APP_NAME") or "GenericAgent"
+    app_name = os.environ.get("GA_APP_NAME") or "A3Agent"
     home = os.path.expanduser("~")
     if sys.platform == "darwin":
         root = os.path.join(home, "Library", "Application Support", app_name)
@@ -56,17 +66,45 @@ def _workspace_config_dir(root):
 
 def _load_mykeys():
     import json
-    base = os.environ.get("GA_USER_DATA_DIR")
-    if isinstance(base, str) and base:
-        base = _workspace_config_dir(base)
+
+    portable_base = None
+    portable_exe_dir = None
+    is_frozen = getattr(sys, 'frozen', False)
+    exe_dir = os.path.dirname(os.path.abspath(sys.executable)) if is_frozen else None
+    print(f"[mykeys DEBUG] sys.frozen={is_frozen}, sys.executable={getattr(sys, 'executable', 'N/A')}, exe_dir={exe_dir}")
+    print(f"[mykeys DEBUG] GA_USER_DATA_DIR={os.environ.get('GA_USER_DATA_DIR', 'NOT SET')}, GA_WORKSPACE_ROOT={os.environ.get('GA_WORKSPACE_ROOT', 'NOT SET')}")
+
+    if is_frozen and exe_dir:
+        portable_candidate = os.path.join(exe_dir, "ga_config")
+        portable_mykey = os.path.join(portable_candidate, "mykey.json")
+        print(f"[mykeys DEBUG] portable_candidate={portable_candidate}, exists_dir={os.path.isdir(portable_candidate)}, exists_key={os.path.exists(portable_mykey)}")
+        if os.path.isdir(portable_candidate) and os.path.exists(portable_mykey):
+            portable_base = portable_candidate
+            print(f"[mykeys] Portable mode: using {portable_mykey}")
+
+    if portable_base:
+        base = portable_base
+        if not os.environ.get("GA_USER_DATA_DIR"):
+            os.environ["GA_USER_DATA_DIR"] = base
+            os.environ["GA_WORKSPACE_ROOT"] = os.path.dirname(os.path.abspath(base))
+            print(f"[mykeys DEBUG] Set GA_USER_DATA_DIR={base}, GA_WORKSPACE_ROOT={os.environ['GA_WORKSPACE_ROOT']}")
     else:
-        root = _normalize_workspace_root(os.environ.get("GA_WORKSPACE_ROOT"))
-        if not (isinstance(root, str) and root):
-            root = _default_workspace_dir()
-        os.makedirs(root, exist_ok=True)
-        os.environ.setdefault("GA_WORKSPACE_ROOT", root)
-        base = _workspace_config_dir(root)
-        os.environ["GA_USER_DATA_DIR"] = base
+        base = os.environ.get("GA_USER_DATA_DIR")
+        print(f"[mykeys DEBUG] Not portable, GA_USER_DATA_DIR={base}")
+        if isinstance(base, str) and base:
+            base = _workspace_config_dir(base)
+            print(f"[mykeys DEBUG] After _workspace_config_dir: base={base}")
+        else:
+            root = _normalize_workspace_root(os.environ.get("GA_WORKSPACE_ROOT"))
+            print(f"[mykeys DEBUG] _normalize_workspace_root={root}")
+            if not (isinstance(root, str) and root):
+                root = _default_workspace_dir()
+                print(f"[mykeys DEBUG] Using _default_workspace_dir={root}")
+            os.makedirs(root, exist_ok=True)
+            os.environ.setdefault("GA_WORKSPACE_ROOT", root)
+            base = _workspace_config_dir(root)
+            os.environ["GA_USER_DATA_DIR"] = base
+            print(f"[mykeys DEBUG] Set base via default: base={base}")
     os.makedirs(base, exist_ok=True)
 
     candidates = [
@@ -76,21 +114,30 @@ def _load_mykeys():
     ga_base = os.environ.get("GA_BASE_DIR")
     if isinstance(ga_base, str) and ga_base:
         candidates.append(os.path.join(ga_base, "mykey.json"))
+    if is_frozen and exe_dir:
+        portable_ga_config = os.path.join(exe_dir, "ga_config")
+        if os.path.isdir(portable_ga_config):
+            candidates.append(os.path.join(portable_ga_config, "mykey.json"))
+    print(f"[mykeys DEBUG] Checking mykey candidates: {candidates}")
     for p in candidates:
+        print(f"[mykeys DEBUG] Trying: {p}, exists={os.path.exists(p)}")
         if os.path.exists(p):
             try:
                 with open(p, "r", encoding="utf-8") as f:
                     data = json.load(f)
+                print(f"[mykeys] SUCCESS loaded from {p}: keys={list(data.keys())}")
                 return {k: v for k, v in data.items() if not k.startswith('_')}
             except Exception as e:
                 print(f"[WARN] failed to parse {p}: {e}")
 
+    # 检查打包资源目录（_MEIPASS/mykey.json 或 _MEIPASS/ga_config/mykey.json）
     try:
-        resource_path = get_resource_path("mykey.json")
-        if os.path.exists(resource_path):
-            with open(resource_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            return {k: v for k, v in data.items() if not k.startswith('_')}
+        for rp in [get_resource_path("mykey.json"), get_resource_path(os.path.join("ga_config", "mykey.json"))]:
+            if os.path.exists(rp):
+                with open(rp, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                print(f"[mykeys] SUCCESS loaded from bundled resource: {rp}")
+                return {k: v for k, v in data.items() if not k.startswith('_')}
     except Exception as e:
         print(f"[WARN] failed to load mykey.json from bundled resources: {e}")
 
@@ -118,25 +165,193 @@ mykeys = _load_mykeys()
 proxy = mykeys.get("proxy", 'http://127.0.0.1:2082')
 proxies = {"http": proxy, "https": proxy} if proxy else None
 
-def compress_history_tags(messages, keep_recent=10, max_len=500):
-    """Compress <thinking>/<tool_use>/<tool_result> tags in older messages to save tokens."""
+def compress_history_tags(messages, keep_recent=10, max_len=800):
+    """Compress <thinking>/<tool_use>/<tool_result> tags in older messages to save tokens.
+    Supports both prompt-style (ClaudeSession/LLMSession) and content-style messages."""
     compress_history_tags._cd = getattr(compress_history_tags, '_cd', 0) + 1
     if compress_history_tags._cd % 5 != 0: return messages
+    _before = sum(len(json.dumps(m, ensure_ascii=False)) for m in messages)
+    _pats = {tag: re.compile(rf'(<{tag}>)([\s\S]*?)(</{tag}>)') for tag in ('thinking', 'think', 'tool_use', 'tool_result')}
+    def _trunc(text):
+        for pat in _pats.values(): text = pat.sub(lambda m: m.group(1) + m.group(2)[:max_len] + '...' + m.group(3) if len(m.group(2)) > max_len else m.group(0), text)
+        return text
     for i, msg in enumerate(messages):
-        if i < len(messages) - keep_recent and 'orig' not in msg:
-            msg['orig'] = msg['prompt']
-            for tag in ('thinking', 'tool_use', 'tool_result'):
-                msg['prompt'] = re.sub(
-                    rf'(<{tag}>)([\s\S]*?)(</{tag}>)',
-                    lambda m, _ml=max_len: m.group(1) + (m.group(2)[:_ml] + '...') + m.group(3) if len(m.group(2)) > _ml else m.group(0),
-                    msg['prompt']
-                )
+        if i >= len(messages) - keep_recent: break
+        if 'prompt' in msg: msg['prompt'] = _trunc(msg['prompt'])
+        elif 'content' in msg and 'prompt' not in msg:
+            c = msg['content']
+            if isinstance(c, str): msg['content'] = _trunc(c)
+            elif isinstance(c, list):
+                for block in c:
+                    if isinstance(block, dict) and block.get('type') == 'text' and isinstance(block.get('text'), str):
+                        block['text'] = _trunc(block['text'])
+    print(f"[Cut] {_before} -> {sum(len(json.dumps(m, ensure_ascii=False)) for m in messages)}")
     return messages
 
 def auto_make_url(base, path):
-    b = (base or "").strip().rstrip("/")
-    p = (path or "").strip().lstrip("/")
-    return f"{b}/{p}" if p else b
+    b, p = base.rstrip('/'), path.strip('/')
+    if b.endswith('$'): return b[:-1].rstrip('/')
+    return b if b.endswith(p) else f"{b}/{p}" if re.search(r'/v\d+$', b) else f"{b}/v1/{p}"
+
+def _parse_claude_sse(resp_lines):
+    """Parse Anthropic SSE stream. Yields text chunks, returns list[content_block]."""
+    content_blocks = []; current_block = None; tool_json_buf = ""
+    stop_reason = None; got_message_stop = False
+    for line in resp_lines:
+        if not line: continue
+        line = line.decode('utf-8') if isinstance(line, bytes) else line
+        if not line.startswith("data:"): continue
+        data_str = line[5:].lstrip()
+        if data_str == "[DONE]": break
+        try: evt = json.loads(data_str)
+        except Exception as e:
+            print(f"[SSE] JSON parse error: {e}, line: {data_str[:200]}")
+            continue
+        evt_type = evt.get("type", "")
+        if evt_type == "message_start":
+            usage = evt.get("message", {}).get("usage", {})
+            ci, cr, inp = usage.get("cache_creation_input_tokens", 0), usage.get("cache_read_input_tokens", 0), usage.get("input_tokens", 0)
+            print(f"[Cache] input={inp} creation={ci} read={cr}")
+        elif evt_type == "content_block_start":
+            block = evt.get("content_block", {})
+            if block.get("type") == "text": current_block = {"type": "text", "text": ""}
+            elif block.get("type") == "tool_use":
+                current_block = {"type": "tool_use", "id": block.get("id", ""), "name": block.get("name", ""), "input": {}}
+                tool_json_buf = ""
+        elif evt_type == "content_block_delta":
+            delta = evt.get("delta", {})
+            if delta.get("type") == "text_delta":
+                text = delta.get("text", "")
+                if current_block and current_block.get("type") == "text": current_block["text"] += text
+                if text: yield text
+            elif delta.get("type") == "input_json_delta": tool_json_buf += delta.get("partial_json", "")
+        elif evt_type == "content_block_stop":
+            if current_block:
+                if current_block["type"] == "tool_use":
+                    try: current_block["input"] = json.loads(tool_json_buf) if tool_json_buf else {}
+                    except: current_block["input"] = {"_raw": tool_json_buf}
+                content_blocks.append(current_block)
+                current_block = None
+        elif evt_type == "message_delta":
+            delta = evt.get("delta", {})
+            stop_reason = delta.get("stop_reason", stop_reason)
+            out_usage = evt.get("usage", {})
+            out_tokens = out_usage.get("output_tokens", 0)
+            if out_tokens: print(f"[Output] tokens={out_tokens} stop_reason={stop_reason}")
+        elif evt_type == "message_stop": got_message_stop = True
+        elif evt_type == "error":
+            err = evt.get("error", {})
+            emsg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
+            print(f"[SSE ERROR] {emsg}")
+            yield f"\n\n[SSE Error: {emsg}]"
+            break
+    if not got_message_stop and not stop_reason:
+        print("[WARN] SSE stream ended without message_stop - possible network interruption")
+        yield "\n\n[!!! 流异常中断，未收到完整响应 !!!]"
+    elif stop_reason == "max_tokens":
+        print(f"[WARN] Response truncated: max_tokens")
+        yield "\n\n[!!! Response truncated: max_tokens !!!]"
+    return content_blocks
+
+def _parse_openai_sse(resp_lines):
+    """Parse OpenAI SSE stream (chat_completions).
+    Yields text chunks, returns list[content_block].
+    content_block: {type:'text', text:str} | {type:'tool_use', id:str, name:str, input:dict}
+    """
+    content_text = ""
+    tc_buf = {}  # index -> {id, name, args}
+    for line in resp_lines:
+        if not line: continue
+        line = line.decode('utf-8', errors='replace') if isinstance(line, bytes) else line
+        if not line.startswith("data:"): continue
+        data_str = line[5:].lstrip()
+        if data_str == "[DONE]": break
+        try: evt = json.loads(data_str)
+        except: continue
+        ch = (evt.get("choices") or [{}])[0]
+        delta = ch.get("delta") or {}
+        if delta.get("content"):
+            text = delta["content"]; content_text += text; yield text
+        for tc in (delta.get("tool_calls") or []):
+            idx = tc.get("index", 0)
+            if idx not in tc_buf: tc_buf[idx] = {"id": tc.get("id", ""), "name": "", "args": ""}
+            if tc.get("function", {}).get("name"): tc_buf[idx]["name"] = tc["function"]["name"]
+            if tc.get("function", {}).get("arguments"): tc_buf[idx]["args"] += tc["function"]["arguments"]
+        usage = evt.get("usage")
+        if usage:
+            cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0)
+            print(f"[Cache] input={usage.get('prompt_tokens',0)} cached={cached}")
+    blocks = []
+    if content_text: blocks.append({"type": "text", "text": content_text})
+    for idx in sorted(tc_buf):
+        tc = tc_buf[idx]
+        try: inp = json.loads(tc["args"]) if tc["args"] else {}
+        except: inp = {"_raw": tc["args"]}
+        blocks.append({"type": "tool_use", "id": tc["id"], "name": tc["name"], "input": inp})
+    return blocks
+
+def _openai_stream(api_base, api_key, messages, model, *, temperature=0.5, max_tokens=None,
+                   tools=None, reasoning_effort=None, max_retries=0,
+                   connect_timeout=10, read_timeout=300, proxies=None):
+    """Shared OpenAI-compatible streaming request with retry. Yields text chunks, returns list[content_block]."""
+    ml = model.lower()
+    if 'kimi' in ml or 'moonshot' in ml: temperature = 1.0
+    elif 'minimax' in ml: temperature = max(0.01, min(temperature, 1.0))
+    url = auto_make_url(api_base, "chat/completions")
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", "Accept": "text/event-stream"}
+    payload = {"model": model, "messages": messages, "temperature": temperature, "stream": True, "stream_options": {"include_usage": True}}
+    if max_tokens: payload["max_tokens"] = max_tokens
+    if reasoning_effort: payload["reasoning_effort"] = reasoning_effort
+    if tools: payload["tools"] = tools
+    RETRYABLE = {408, 409, 425, 429, 500, 502, 503, 504}
+    def _delay(resp, attempt):
+        try: ra = float((resp.headers or {}).get("retry-after"))
+        except: ra = None
+        return max(0.5, ra if ra is not None else min(30.0, 1.5 * (2 ** attempt)))
+    for attempt in range(max_retries + 1):
+        streamed = False
+        try:
+            with requests.post(url, headers=headers, json=payload, stream=True,
+                               timeout=(connect_timeout, read_timeout), proxies=proxies) as r:
+                if r.status_code >= 400:
+                    if r.status_code in RETRYABLE and attempt < max_retries:
+                        d = _delay(r, attempt)
+                        print(f"[LLM Retry] HTTP {r.status_code}, retry in {d:.1f}s ({attempt+1}/{max_retries+1})")
+                        time.sleep(d); continue
+                    err_body = ""
+                    try: err_body = r.text.strip()[:1200]
+                    except: pass
+                    try: r.raise_for_status()
+                    except requests.HTTPError as e:
+                        e._err_body = err_body; raise
+                gen = _parse_openai_sse(r.iter_lines())
+                try:
+                    while True: streamed = True; yield next(gen)
+                except StopIteration as e:
+                    return e.value or []
+        except requests.HTTPError as e:
+            resp = getattr(e, "response", None); status = getattr(resp, "status_code", None)
+            if status in RETRYABLE and attempt < max_retries and not streamed:
+                d = _delay(resp, attempt)
+                print(f"[LLM Retry] HTTP {status}, retry in {d:.1f}s ({attempt+1}/{max_retries+1})")
+                time.sleep(d); continue
+            body = ""; rid = ""; ra = ""; ct = ""
+            try: body = getattr(e, '_err_body', '') or (resp.text or "").strip()[:1200]
+            except: pass
+            try: h = resp.headers or {}; rid = h.get("x-request-id","") or h.get("request-id",""); ra = h.get("retry-after",""); ct = h.get("content-type","")
+            except: pass
+            err = f"Error: HTTP {status} {e}; content_type: {ct or '<empty>'}; retry_after: {ra or '<empty>'}; request_id: {rid or '<empty>'}; body: {body or '<empty>'}"
+            yield err; return [{"type": "text", "text": err}]
+        except (requests.Timeout, requests.ConnectionError) as e:
+            if attempt < max_retries and not streamed:
+                d = _delay(None, attempt)
+                print(f"[LLM Retry] {type(e).__name__}, retry in {d:.1f}s ({attempt+1}/{max_retries+1})")
+                time.sleep(d); continue
+            err = f"Error: {type(e).__name__}: {e}"
+            yield err; return [{"type": "text", "text": err}]
+        except Exception as e:
+            err = f"Error: {e}"
+            yield err; return [{"type": "text", "text": err}]
 
 def build_multimodal_content(prompt_text, image_paths):
     parts = []
@@ -175,6 +390,7 @@ class ClaudeSession:
     def __init__(self, api_key, api_base, model="claude-opus", context_win=12000):
         self.api_key, self.api_base, self.default_model, self.context_win = api_key, api_base.rstrip('/'), model, context_win
         self.raw_msgs, self.lock = [], threading.Lock()
+        self.system = ""
     def _trim_messages(self, messages):
         compress_history_tags(messages)
         total = sum(len(m['prompt']) for m in messages)
@@ -192,27 +408,21 @@ class ClaudeSession:
     def raw_ask(self, messages, model=None, temperature=0.5, max_tokens=6144):
         model = model or self.default_model
         if 'kimi' in model.lower() or 'moonshot' in model.lower(): temperature = 1.0  # kimi/moonshot only accepts temp 1.0
-        headers = {"x-api-key": self.api_key, "Content-Type": "application/json", "anthropic-version": "2023-06-01"}
+        elif 'minimax' in model.lower(): temperature = max(0.01, min(temperature, 1.0))
+        headers = {"x-api-key": self.api_key, "Content-Type": "application/json", "anthropic-version": "2023-06-01", "anthropic-beta": "prompt-caching-2024-07-31"}
         payload = {"model": model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens, "stream": True}
+        if self.system: payload["system"] = [{"type": "text", "text": self.system, "cache_control": {"type": "persistent"}}]
         try:
             with requests.post(auto_make_url(self.api_base, "messages"), headers=headers, json=payload, stream=True, timeout=(5,30)) as r:
                 r.raise_for_status()
-                for line in r.iter_lines():
-                    if not line: continue
-                    line = line.decode("utf-8") if isinstance(line, bytes) else line
-                    if not line.startswith("data:"): continue
-                    data = line[5:].lstrip()
-                    if data == "[DONE]": break
-                    try:
-                        obj = json.loads(data)
-                        if obj.get("type") == "content_block_delta" and obj.get("delta", {}).get("type") == "text_delta":
-                            text = obj["delta"].get("text", "")
-                            if text: yield text
-                    except: pass
+                yield from _parse_claude_sse(r.iter_lines())
         except Exception as e: yield f"Error: {str(e)}"
     def make_messages(self, raw_list):
         trimmed = self._trim_messages(raw_list)
-        return [{"role": m['role'], "content": m['prompt']} for m in trimmed]
+        msgs = [{"role": m['role'], "content": [{"type": "text", "text": m['prompt']}]} for m in trimmed]
+        c = msgs[-1]["content"]
+        c[-1] = dict(c[-1], cache_control={"type": "ephemeral"})
+        return msgs
     def ask(self, prompt, model=None, stream=False):
         def _ask_gen():
             content = ''
@@ -237,136 +447,15 @@ class LLMSession:
         mode = str(api_mode or "chat_completions").strip().lower().replace('-', '_')
         if mode in ["responses", "response"]: self.api_mode = "responses"
         else: self.api_mode = "chat_completions"
-
-    def _retry_delay(self, resp, attempt):
-        retry_after = None
-        try:
-            if resp is not None:
-                retry_after = (resp.headers or {}).get("retry-after")
-            if retry_after is not None:
-                retry_after = float(retry_after)
-        except:
-            retry_after = None
-        if retry_after is None: retry_after = min(30.0, 1.5 * (2 ** attempt))
-        return max(0.5, float(retry_after))
-
-    def _to_responses_input(self, messages):
-        result = []
-        for msg in messages:
-            role = str(msg.get("role", "user")).lower()
-            if role not in ["user", "assistant", "system", "developer"]: role = "user"
-            content = msg.get("content", "")
-            text_type = "output_text" if role == "assistant" else "input_text"
-            parts = []
-            if isinstance(content, str):
-                if content: parts.append({"type": text_type, "text": content})
-            elif isinstance(content, list):
-                for part in content:
-                    if not isinstance(part, dict): continue
-                    ptype = part.get("type")
-                    if ptype == "text":
-                        text = part.get("text", "")
-                        if text: parts.append({"type": text_type, "text": text})
-                    elif ptype == "image_url":
-                        url = (part.get("image_url") or {}).get("url", "")
-                        if url and role != "assistant": parts.append({"type": "input_image", "image_url": url})
-            if len(parts) == 0: parts = [{"type": text_type, "text": str(content)}]
-            result.append({"role": role, "content": parts})
-        return result
+        effort = None  # reasoning_effort not supported via simple cfg yet; kept for forward compatibility
+        self.reasoning_effort = effort
 
     def raw_ask(self, messages, model=None, temperature=0.5):
         if model is None: model = self.default_model
-        if 'kimi' in model.lower() or 'moonshot' in model.lower(): temperature = 1.0  # kimi/moonshot only accepts temp 1.0
-        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json", "Accept": "text/event-stream"}
-        if self.api_mode == "responses":
-            url = auto_make_url(self.api_base, "responses")
-            payload = {"model": model, "input": self._to_responses_input(messages), "temperature": temperature, "stream": True}
-        else:
-            url = auto_make_url(self.api_base, "chat/completions")
-            payload = {"model": model, "messages": messages, "temperature": temperature, "stream": True}
-        for attempt in range(self.max_retries + 1):
-            streamed_any = False
-            try:
-                with requests.post(url, headers=headers, json=payload, stream=True,
-                                   timeout=(self.connect_timeout, self.read_timeout), proxies=self.proxies) as r:
-                    if r.status_code >= 400:
-                        retryable = r.status_code in [408, 409, 425, 429, 500, 502, 503, 504]
-                        if retryable and attempt < self.max_retries:
-                            delay = self._retry_delay(r, attempt)
-                            print(f"[LLM Retry] HTTP {r.status_code}, retry in {delay:.1f}s ({attempt+1}/{self.max_retries+1})")
-                            time.sleep(delay)
-                            continue
-                    r.raise_for_status()
-                    buffer = ''; seen_delta = False
-                    for line in r.iter_lines():
-                        line = line.decode("utf-8") if isinstance(line, bytes) else line
-                        if not line or not line.startswith("data:"): continue
-                        data = line[5:].lstrip()
-                        if data == "[DONE]": break
-                        try: obj = json.loads(data)
-                        except: continue
-                        if self.api_mode == "responses":
-                            etype = obj.get("type", "")
-                            delta = obj.get("delta", "") if etype == "response.output_text.delta" else ""
-                            if delta:
-                                streamed_any = True; seen_delta = True
-                                yield delta; buffer += delta
-                            elif etype == "response.output_text.done" and not seen_delta:
-                                text = obj.get("text", "")
-                                if text:
-                                    streamed_any = True
-                                    yield text; buffer += text
-                            elif etype == "error":
-                                err = obj.get("error", {})
-                                emsg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
-                                if emsg:
-                                    yield f"Error: {emsg}"
-                                    return
-                            elif etype == "response.completed":
-                                break
-                        else:
-                            ch = (obj.get("choices") or [{}])[0]
-                            finish_reason = ch.get("finish_reason")
-                            delta = (ch.get("delta") or {}).get("content")
-                            if delta:
-                                streamed_any = True
-                                yield delta; buffer += delta
-                            if finish_reason: break
-                        if '</tool_use>' in buffer[-30:]: break
-                    return
-            except requests.HTTPError as e:
-                resp = getattr(e, "response", None)
-                status = getattr(resp, "status_code", "unknown")
-                retryable = isinstance(status, int) and status in [408, 409, 425, 429, 500, 502, 503, 504]
-                if retryable and attempt < self.max_retries and not streamed_any:
-                    delay = self._retry_delay(resp, attempt)
-                    print(f"[LLM Retry] HTTP {status}, retry in {delay:.1f}s ({attempt+1}/{self.max_retries+1})")
-                    time.sleep(delay)
-                    continue
-                body = ""
-                try: body = (resp.text or "").strip()
-                except: body = ""
-                body = body[:1200] if body else "<empty>"
-                rid = ""; retry_after = ""; ct = ""
-                try:
-                    h = resp.headers or {}
-                    rid = h.get("x-request-id") or h.get("request-id") or ""
-                    retry_after = h.get("retry-after") or ""
-                    ct = h.get("content-type") or ""
-                except: pass
-                yield f"Error: HTTP {status} {str(e)}; content_type: {ct or '<empty>'}; retry_after: {retry_after or '<empty>'}; request_id: {rid or '<empty>'}; body: {body}"
-                return
-            except (requests.Timeout, requests.ConnectionError) as e:
-                if attempt < self.max_retries and not streamed_any:
-                    delay = self._retry_delay(None, attempt)
-                    print(f"[LLM Retry] {type(e).__name__}, retry in {delay:.1f}s ({attempt+1}/{self.max_retries+1})")
-                    time.sleep(delay)
-                    continue
-                yield f"Error: {type(e).__name__}: {str(e)}"
-                return
-            except Exception as e:
-                yield f"Error: {str(e)}"
-                return
+        yield from _openai_stream(self.api_base, self.api_key, messages, model,
+                                  temperature=temperature, reasoning_effort=self.reasoning_effort,
+                                  max_retries=self.max_retries, connect_timeout=self.connect_timeout,
+                                  read_timeout=self.read_timeout, proxies=self.proxies)
 
     def make_messages(self, raw_list, omit_images=True):
         compress_history_tags(raw_list)
@@ -497,16 +586,17 @@ class MockFunction:
     def __init__(self, name, arguments): self.name, self.arguments = name, arguments  
          
 class MockToolCall:
-    def __init__(self, name, args):
+    def __init__(self, name, args, id=''):
         arg_str = json.dumps(args, ensure_ascii=False) if isinstance(args, dict) else args
-        self.function = MockFunction(name, arg_str)
+        self.function = MockFunction(name, arg_str); self.id = id
 
 class MockResponse:
-    def __init__(self, thinking, content, tool_calls, raw):
+    def __init__(self, thinking, content, tool_calls, raw, stop_reason='end_turn'):
         self.thinking = thinking        # 存放 <thinking> 内部的思维过程
         self.content = content          # 存放去除标签后的纯文本回复
         self.tool_calls = tool_calls    # 存放 MockToolCall 列表 或 None
         self.raw = raw
+        self.stop_reason = 'tool_use' if tool_calls else stop_reason
     def __repr__(self):    
         return f"<MockResponse thinking={bool(self.thinking)}, content='{self.content}', tools={bool(self.tool_calls)}>"
 
@@ -524,8 +614,8 @@ class ToolClient:
             return (yield from self._chat_structured(messages, tools))
         full_prompt = self._build_protocol_prompt(messages, tools)      
         print("Full prompt length:", len(full_prompt), 'chars')
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        with open(os.path.join(script_dir, f'./temp/model_responses_{os.getpid()}.txt'), 'a', encoding='utf-8', errors="replace") as f:
+        log_dir = _get_model_log_dir()
+        with open(os.path.join(log_dir, f'model_responses_{os.getpid()}.txt'), 'a', encoding='utf-8', errors="replace") as f:
             f.write(f"=== Prompt === {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n{full_prompt}\n")
         gen = self.backend.ask(full_prompt, stream=True)
         raw_text = ''; summarytag = '[NextWillSummary]'
@@ -535,8 +625,8 @@ class ToolClient:
         print('Complete response received.')
         if raw_text.endswith(summarytag):
             self.last_tools = ''; raw_text = raw_text[:-len(summarytag)]
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        with open(os.path.join(script_dir, f'./temp/model_responses_{os.getpid()}.txt'), 'a', encoding='utf-8', errors="replace") as f:
+        log_dir = _get_model_log_dir()
+        with open(os.path.join(log_dir, f'model_responses_{os.getpid()}.txt'), 'a', encoding='utf-8', errors="replace") as f:
             f.write(f"=== Response === {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n{raw_text}\n\n")
         return self._parse_mixed_response(raw_text)
 
@@ -616,8 +706,8 @@ class ToolClient:
     def _chat_structured(self, messages, tools):
         backend_messages = self._build_backend_messages(messages, tools)
         print("Structured prompt length:", sum(self._estimate_content_len(m.get("content")) for m in backend_messages), 'chars')
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        with open(os.path.join(script_dir, f'./temp/model_responses_{os.getpid()}.txt'), 'a', encoding='utf-8', errors="replace") as f:
+        log_dir = _get_model_log_dir()
+        with open(os.path.join(log_dir, f'model_responses_{os.getpid()}.txt'), 'a', encoding='utf-8', errors="replace") as f:
             f.write(f"=== Prompt === {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n{self._serialize_messages_for_log(backend_messages)}\n")
         gen = self.backend.raw_ask(backend_messages)
         raw_text = ''; summarytag = '[NextWillSummary]'
@@ -627,7 +717,8 @@ class ToolClient:
         print('Complete response received.')
         if raw_text.endswith(summarytag):
             self.last_tools = ''; raw_text = raw_text[:-len(summarytag)]
-        with open(os.path.join(script_dir, f'./temp/model_responses_{os.getpid()}.txt'), 'a', encoding='utf-8', errors="replace") as f:
+        log_dir = _get_model_log_dir()
+        with open(os.path.join(log_dir, f'model_responses_{os.getpid()}.txt'), 'a', encoding='utf-8', errors="replace") as f:
             f.write(f"=== Response === {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n{raw_text}\n\n")
         return self._parse_mixed_response(raw_text)
 
