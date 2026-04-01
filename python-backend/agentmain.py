@@ -5,6 +5,7 @@ elif hasattr(sys.stdout, 'reconfigure'): sys.stdout.reconfigure(errors='replace'
 if sys.stderr is None: sys.stderr = open(os.devnull, "w")
 elif hasattr(sys.stderr, 'reconfigure'): sys.stderr.reconfigure(errors='replace')
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from path_utils import resource_dir, temp_dir
 
 _this_dir = os.path.dirname(os.path.abspath(__file__))
 _resource_dir = os.environ.get("GA_BASE_DIR") or _this_dir
@@ -87,12 +88,14 @@ def _get_data_dir():
         os.makedirs(base, exist_ok=True)
     return base
 
+
+def _get_temp_dir(*parts):
+    return str(temp_dir(*parts, root=_get_data_dir()))
+
 class GeneraticAgent:
     def __init__(self, is_vision=False):
         # 确保目录和监控启动
-        base = _get_base_dir()
-        temp_dir = os.path.join(base, "temp")
-        if not os.path.exists(temp_dir): os.makedirs(temp_dir)
+        temp_dir = _get_temp_dir()
         health_monitor.start_monitor(temp_dir)
         import importlib
         import llmcore
@@ -131,6 +134,8 @@ class GeneraticAgent:
             self.llmclient = LLMClientLogger(self.llmclient, os.path.join(temp_dir, 'model_calls.log'))
         else: self.llmclient = None
         self.lock = threading.Lock()
+        self._state_lock = threading.Lock()
+        self._state_cond = threading.Condition(self._state_lock)
         self.history = []               
         self.task_queue = queue.Queue() 
         self.is_running, self.stop_sig = False, False
@@ -140,6 +145,26 @@ class GeneraticAgent:
         self.verbose = True
         self.max_history_items = int(os.environ.get("GA_MAX_HISTORY_ITEMS") or 80)
         self.max_history_chars = int(os.environ.get("GA_MAX_HISTORY_CHARS") or 240000)
+
+    def _clear_pending_tasks(self):
+        cleared = 0
+        try:
+            with self.task_queue.mutex:
+                cleared = len(self.task_queue.queue)
+                self.task_queue.queue.clear()
+        except Exception:
+            pass
+        return cleared
+
+    def _wait_for_idle(self, timeout=5.0):
+        deadline = time.time() + max(0.0, float(timeout))
+        with self._state_cond:
+            while (self.is_running or self.stop_sig) and time.time() < deadline:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    break
+                self._state_cond.wait(timeout=min(0.1, remaining))
+            return not (self.is_running or self.stop_sig)
 
     def reload_config(self):
         """重新加载模型配置"""
@@ -176,8 +201,7 @@ class GeneraticAgent:
                 print(f"[WARN] Failed to load config {k}: {e}")
                 
         if len(llm_sessions) > 0:
-            base = _get_base_dir()
-            temp_dir = os.path.join(base, "temp")
+            temp_dir = _get_temp_dir()
             self.llmclient = llmcore.ToolClient(llm_sessions, auto_save_tokens=True)
             self.llmclient = LLMClientLogger(self.llmclient, os.path.join(temp_dir, 'model_calls.log'))
         else:
@@ -193,8 +217,17 @@ class GeneraticAgent:
 
     def abort(self):
         print('Abort current task...')
-        if not self.is_running: return
-        self.stop_sig = True
+        with self._state_cond:
+            self.stop_sig = True
+            cleared = self._clear_pending_tasks()
+            self._state_cond.notify_all()
+        if cleared:
+            print(f"[Debug] Cleared {cleared} pending task(s) from queue.")
+        if not self.is_running:
+            with self._state_cond:
+                self.stop_sig = False
+                self._state_cond.notify_all()
+            return
         try:
             backend = getattr(getattr(self, "llmclient", None), "backend", None)
             if backend is not None and hasattr(backend, "cancel"):
@@ -242,13 +275,21 @@ class GeneraticAgent:
                 
     def put_task(self, query, source="user"):
         display_queue = queue.Queue()
+        with self._state_cond:
+            busy = self.stop_sig or self.is_running
+        if busy:
+            self._wait_for_idle(timeout=10)
+        with self._state_cond:
+            self._state_cond.notify_all()
         self.task_queue.put({"query": query, "source": source, "output": display_queue})
         return display_queue
 
     def run(self):
         while True:
             task = self.task_queue.get()
-            self.is_running = True
+            with self._state_cond:
+                self.is_running = True
+                self._state_cond.notify_all()
             raw_query, source, display_queue = task["query"], task["source"], task["output"]
             rquery = smart_format(raw_query.replace('\n', ' '), max_str_len=200)
             self.history.append(f"[USER]: {rquery}")
@@ -268,7 +309,21 @@ class GeneraticAgent:
                 full_resp = ""
                 full_parts = []
                 pending = ""
-                flush_chars = 200
+                flush_chars = 32
+                flush_interval = 0.35
+                last_flush_t = time.time()
+
+                def flush_pending(force=False):
+                    nonlocal pending, last_flush_t
+                    if not pending:
+                        return
+                    if not force and len(pending) < flush_chars and (time.time() - last_flush_t) < flush_interval:
+                        return
+                    out = pending if self.inc_out else ''.join(full_parts)
+                    display_queue.put({'next': out, 'source': source})
+                    pending = ""
+                    last_flush_t = time.time()
+
                 for chunk in gen:
                     if self.stop_sig:
                         try:
@@ -279,10 +334,8 @@ class GeneraticAgent:
                     if chunk:
                         full_parts.append(chunk)
                         pending += chunk
-                    if len(pending) >= flush_chars:
-                        out = pending if self.inc_out else ''.join(full_parts)
-                        display_queue.put({'next': out, 'source': source})
-                        pending = ""
+                    flush_pending()
+                flush_pending(force=True)
                 if pending:
                     out = pending if self.inc_out else ''.join(full_parts)
                     display_queue.put({'next': out, 'source': source})
@@ -295,7 +348,10 @@ class GeneraticAgent:
                 print(f"Backend Error: {format_error(e)}")
                 display_queue.put({'done': full_resp + f'\n```\n{format_error(e)}\n```', 'source': source})
             finally:
-                self.is_running = self.stop_sig = False
+                with self._state_cond:
+                    self.is_running = False
+                    self.stop_sig = False
+                    self._state_cond.notify_all()
                 self.task_queue.task_done()
                 if self.handler is not None: self.handler.code_stop_signal.append(1)
 
@@ -312,7 +368,7 @@ def start_scheduled_scheduler(llm_no=0):
             item = dq.get()
             if 'done' in item:
                 break
-        open(os.path.join(_get_data_dir(), 'temp/scheduler.log'), 'a', encoding='utf-8').write(
+        open(os.path.join(_get_temp_dir(), 'scheduler.log'), 'a', encoding='utf-8').write(
             f'[{datetime.now():%m-%d %H:%M}] {tag}\n{item["done"]}\n\n'
         )
 
@@ -358,7 +414,7 @@ if __name__ == '__main__':
         threading.Thread(target=agent.run, daemon=True).start()
 
     if args.task:
-        d = os.path.join(_get_data_dir(), f'temp/{args.task}'); rp = os.path.join(d, 'reply.txt'); nround = ''
+        d = _get_temp_dir(args.task); rp = os.path.join(d, 'reply.txt'); nround = ''
         with open(os.path.join(d, 'input.txt'), encoding='utf-8') as f: raw = f.read()
         while True:
             dq = agent.put_task(raw, source='task')

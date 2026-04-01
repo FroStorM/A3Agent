@@ -3,6 +3,7 @@ import json, os, re, sys, threading, time
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, PROJECT_ROOT)
 os.chdir(PROJECT_ROOT)
+from path_utils import temp_dir
 
 import lark_oapi as lark
 from lark_oapi.api.im.v1 import *
@@ -27,7 +28,7 @@ _FILE_TYPE_MAP = {
 }
 _MSG_TYPE_MAP = {"image": "[image]", "audio": "[audio]", "file": "[file]", "media": "[media]", "sticker": "[sticker]"}
 
-TEMP_DIR = os.path.join(PROJECT_ROOT, "temp")
+TEMP_DIR = str(temp_dir(root=PROJECT_ROOT))
 MEDIA_DIR = os.path.join(TEMP_DIR, "feishu_media")
 os.makedirs(MEDIA_DIR, exist_ok=True)
 

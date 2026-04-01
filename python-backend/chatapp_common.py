@@ -1,10 +1,9 @@
 import asyncio, glob, os, queue as Q, re, socket, sys, time
+from path_utils import backend_dir, temp_dir
 
 HELP_TEXT = "📖 命令列表:\n/help - 显示帮助\n/status - 查看状态\n/stop - 停止当前任务\n/new - 清空当前上下文\n/restore - 恢复上次对话历史\n/llm [n] - 查看或切换模型"
 FILE_HINT = "If you need to show files to user, use [FILE:filepath] in your response."
 TAG_PATS = [r"<" + t + r">.*?</" + t + r">" for t in ("thinking", "summary", "tool_use", "file_content")]
-
-
 def clean_reply(text):
     for pat in TAG_PATS:
         text = re.sub(pat, "", text or "", flags=re.DOTALL)
@@ -95,8 +94,7 @@ def require_runtime(agent, label, **required):
 
 
 def redirect_log(script_file, log_name, label, allowed):
-    log_dir = os.path.join(os.path.dirname(script_file), "temp")
-    os.makedirs(log_dir, exist_ok=True)
+    log_dir = temp_dir(root=os.path.dirname(os.path.abspath(script_file)))
     logf = open(os.path.join(log_dir, log_name), "a", encoding="utf-8", buffering=1)
     sys.stdout = sys.stderr = logf
     print(f"[NEW] {label} process starting, the above are history infos ...")

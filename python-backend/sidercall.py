@@ -2,13 +2,7 @@ import os, json, re, time, requests, sys, threading, urllib3, socket
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 from llmcore import mykeys
-
-# 数据目录定义
-_this_dir = os.path.dirname(os.path.abspath(__file__))
-_resource_dir = os.environ.get("GA_BASE_DIR") or _this_dir
-if _resource_dir.endswith(".zip") and os.path.isfile(_resource_dir):
-    _resource_dir = os.path.dirname(os.path.dirname(_resource_dir))
-_data_dir = os.environ.get("GA_USER_DATA_DIR") or _resource_dir
+from path_utils import temp_dir
 
 proxy = mykeys.get("proxy", 'http://127.0.0.1:2082')
 proxies = {"http": proxy, "https": proxy} if proxy else None
@@ -554,8 +548,8 @@ class ToolClient:
     def chat(self, messages, tools=None):
         full_prompt = self._build_protocol_prompt(messages, tools)      
         print("Full prompt length:", len(full_prompt), 'chars')
-        os.makedirs(os.path.join(_data_dir, 'temp'), exist_ok=True)
-        with open(os.path.join(_data_dir, 'temp', f'model_responses_{os.getpid()}.txt'), 'a', encoding='utf-8', errors="replace") as f:
+        log_path = temp_dir().joinpath(f"model_responses_{os.getpid()}.txt")
+        with open(log_path, 'a', encoding='utf-8', errors="replace") as f:
             f.write(f"=== Prompt ===\n{full_prompt}\n")
         gen = self.backend.ask(full_prompt, stream=True)
         raw_text = ''; summarytag = '[NextWillSummary]'
@@ -565,7 +559,7 @@ class ToolClient:
         print('Complete response received.')
         if raw_text.endswith(summarytag):
             self.last_tools = ''; raw_text = raw_text[:-len(summarytag)]
-        with open(os.path.join(_data_dir, 'temp', f'model_responses_{os.getpid()}.txt'), 'a', encoding='utf-8', errors="replace") as f:
+        with open(log_path, 'a', encoding='utf-8', errors="replace") as f:
             f.write(f"=== Response ===\n{raw_text}\n\n")
         return self._parse_mixed_response(raw_text)
 

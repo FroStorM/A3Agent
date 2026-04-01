@@ -439,7 +439,7 @@ pip install xai-sdk
 ### 开发模式
 
 ```bash
-cd GA-SOLO
+cd A3Agent
 npm install
 npm run tauri dev
 ```
@@ -447,6 +447,7 @@ npm run tauri dev
 ### 生产构建
 
 ```bash
+npm run build:frontend
 npm run tauri build
 ```
 

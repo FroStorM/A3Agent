@@ -105,6 +105,28 @@ createApp({
         const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
         let floatingStateHint = '';
         let floatingStateHintUntil = 0;
+        const streamDebugEvents = ref([]);
+        const submissionNotice = ref('');
+        const submitInFlight = ref(false);
+        const pendingSubmissions = new Map();
+        let currentSubmitAbortController = null;
+        const pushStreamDebug = (kind, detail = {}) => {
+            const entry = {
+                ts: new Date().toLocaleTimeString(),
+                kind,
+                ...detail,
+            };
+            streamDebugEvents.value.unshift(entry);
+            if (streamDebugEvents.value.length > 40) {
+                streamDebugEvents.value.length = 40;
+            }
+            try {
+                console.debug('[StreamDebug]', entry);
+            } catch {}
+        };
+        if (typeof window !== 'undefined') {
+            window.__A3_STREAM_DEBUG__ = streamDebugEvents;
+        }
 
         const looksLikeHumanRequest = (text) => {
             const s = String(text || '');
@@ -364,11 +386,23 @@ createApp({
             }
             
             eventSource = new EventSource('/api/stream');
+            pushStreamDebug('sse-open', { readyState: eventSource.readyState });
+            eventSource.onopen = () => {
+                pushStreamDebug('sse-onopen', { readyState: eventSource.readyState });
+            };
             
             eventSource.onmessage = (event) => {
                 try {
                     const data = JSON.parse(event.data);
                     const runId = String(data.run_id || '__default__');
+                    const requestId = String(data.request_id || '');
+                    pushStreamDebug('sse-message', {
+                        type: data.type || '',
+                        state: data.state || '',
+                        run_id: runId,
+                        request_id: requestId,
+                        content_len: typeof data.content === 'string' ? data.content.length : 0,
+                    });
 
                     const updateTypingState = () => {
                         isTyping.value = runStates.size > 0;
@@ -390,6 +424,12 @@ createApp({
                             msg.tail = (String(msg.tail || '') + buf).slice(-streamTailMax);
                             msg.content = `【输出过长，流式仅显示末尾 ${streamTailMax} 字】\n` + msg.tail;
                         }
+                        pushStreamDebug('flush-run', {
+                            run_id: rid,
+                            flushed_len: buf.length,
+                            total_len: msg.totalLen,
+                            rendered_len: msg.content.length,
+                        });
                         scrollToBottom();
                     };
 
@@ -405,11 +445,28 @@ createApp({
                     
                     if (data.type === 'message') {
                         // This is a prompt (from user or autonomous)
+                        pushStreamDebug('message', {
+                            run_id: runId,
+                            request_id: requestId,
+                            source: data.source || '',
+                            prompt_len: typeof data.content === 'string' ? data.content.length : 0,
+                        });
                         messages.value.push(makeMessage('user', data.content, {
                             timestamp: data.timestamp || new Date().toLocaleTimeString(),
                             source: data.source,
                             run_id: runId
                         }));
+                        const pending = requestId ? pendingSubmissions.get(requestId) : null;
+                        if (pending) {
+                            pending.confirmed = true;
+                            pendingSubmissions.set(requestId, pending);
+                            submissionNotice.value = '后端已接收，等待模型输出...';
+                            pushStreamDebug('submit-acked', {
+                                run_id: runId,
+                                request_id: requestId,
+                                prompt_len: pending.prompt_len,
+                            });
+                        }
                         scrollToBottom();
                         
                         // Prepare assistant message placeholder
@@ -429,6 +486,7 @@ createApp({
                             emitFloatingStatus(status.value, true, 'running');
                         } else if (data.state === 'idle') {
                             status.value.is_running = false;
+                            status.value.needs_human_input = false;
                             if (!status.value.needs_human_input) {
                                 setFloatingStateHint('idle');
                                 emitFloatingStatus(status.value, false, 'idle');
@@ -442,17 +500,24 @@ createApp({
                         const msg = messages.value[st.assistantIndex];
                         if (msg && msg.role === 'assistant') {
                             st.buffer += String(data.content ?? '');
-                            const liveText = `${msg.content || ''}${st.buffer}`;
-                            if (looksLikeHumanRequest(liveText)) {
-                                status.value.needs_human_input = true;
-                                status.value.is_running = false;
-                                setFloatingStateHint('need-user');
-                                emitFloatingStatus(status.value, false, 'need-user');
-                            }
+                        pushStreamDebug('chunk-buffer', {
+                            run_id: runId,
+                            request_id: requestId,
+                            chunk_len: String(data.content ?? '').length,
+                            buffered_len: st.buffer.length,
+                            msg_len: msg.content.length,
+                        });
                             scheduleFlush(runId);
                         }
                     } else if (data.type === 'done') {
                         const st = runStates.get(runId);
+                        pushStreamDebug('done-recv', {
+                            run_id: runId,
+                            request_id: requestId,
+                            has_state: !!st,
+                            active_runs: activeStreamRuns,
+                            content_len: typeof data.content === 'string' ? data.content.length : 0,
+                        });
                         if (!st) {
                             activeStreamRuns = Math.max(0, activeStreamRuns - 1);
                             if (looksLikeHumanRequest(data.content)) {
@@ -481,21 +546,37 @@ createApp({
                             msg.content = full;
                             msg.streaming = false;
                             finalizeMessage(msg);
+                            pushStreamDebug('done-finalize', {
+                                run_id: runId,
+                                request_id: requestId,
+                                full_len: full.length,
+                                is_human_like: looksLikeHumanRequest(full),
+                            });
                             if (looksLikeHumanRequest(full)) {
                                 status.value.needs_human_input = true;
                                 status.value.is_running = false;
                                 setFloatingStateHint('need-user');
                             } else if (activeStreamRuns <= 1) {
+                                status.value.needs_human_input = false;
                                 setFloatingStateHint('idle');
                             }
                         }
                         runStates.delete(runId);
                         activeStreamRuns = Math.max(0, activeStreamRuns - 1);
+                        if (requestId && pendingSubmissions.has(requestId)) {
+                            pendingSubmissions.delete(requestId);
+                        } else {
+                            pendingSubmissions.delete(runId);
+                        }
+                        if (pendingSubmissions.size === 0 && !submitInFlight.value) {
+                            submissionNotice.value = '';
+                        }
                         if (looksLikeHumanRequest(data.content) || status.value.needs_human_input) {
                             emitFloatingStatus(status.value, false, 'need-user');
                         } else if (activeStreamRuns > 0) {
                             emitFloatingStatus(status.value, true, 'running');
                         } else {
+                            status.value.needs_human_input = false;
                             emitFloatingStatus(status.value, false, 'idle');
                         }
                         updateTypingState();
@@ -504,15 +585,21 @@ createApp({
                         activeStreamRuns += 1;
                         status.value.needs_human_input = false;
                         setFloatingStateHint('running', 30000);
+                        pushStreamDebug('start-recv', { run_id: runId, request_id: requestId, active_runs: activeStreamRuns });
                         emitFloatingStatus(status.value, true);
                         updateTypingState();
                     }
                 } catch (e) {
+                    pushStreamDebug('sse-parse-error', { error: String(e && e.message ? e.message : e) });
                     console.error('Error parsing SSE:', e);
                 }
             };
             
             eventSource.onerror = (e) => {
+                pushStreamDebug('sse-error', {
+                    readyState: eventSource ? eventSource.readyState : -1,
+                    active_runs: activeStreamRuns,
+                });
                 if (!sseReconnectTimer) {
                     eventSource.close();
                     sseReconnectTimer = setTimeout(() => {
@@ -535,14 +622,21 @@ createApp({
                 const hintedState = getFloatingStateHint();
                 const resolvedState = explicitState
                     || ((data && data.agent_init_error) ? 'error' : '')
+                    || (effectiveRunning ? 'running' : '')
                     || (needsHuman ? 'need-user' : '')
-                    || hintedState
-                    || (effectiveRunning ? 'running' : 'idle');
+                    || (hintedState === 'running' ? 'running' : '')
+                    || (hintedState === 'idle' ? 'idle' : '')
+                    || 'idle';
                 tauri.event.emit('ga-status', {
                     is_running: effectiveRunning,
                     needs_human_input: needsHuman,
                     agent_init_error: (data && data.agent_init_error) ? String(data.agent_init_error) : '',
                     state: resolvedState
+                });
+                pushStreamDebug('emit-status', {
+                    state: resolvedState,
+                    is_running: effectiveRunning,
+                    needs_human_input: needsHuman,
                 });
             } catch {}
         };
@@ -664,37 +758,69 @@ createApp({
             if (!inputMessage.value.trim() || isTyping.value) return;
 
             const prompt = inputMessage.value;
-            inputMessage.value = '';
-            isTyping.value = true;
-            status.value.is_running = true;
-            status.value.needs_human_input = false;
-            setFloatingStateHint('running', 30000);
-            emitFloatingStatus(status.value, true, 'running');
-            
-            // Reset textarea height
+            const requestId = (typeof crypto !== 'undefined' && crypto.randomUUID)
+                ? crypto.randomUUID()
+                : `${Date.now()}_${Math.random().toString(16).slice(2)}`;
+            if (currentSubmitAbortController) {
+                try { currentSubmitAbortController.abort(); } catch {}
+            }
+            currentSubmitAbortController = new AbortController();
+            submitInFlight.value = true;
+            submissionNotice.value = '正在提交到后端...';
+            pushStreamDebug('send-start', {
+                request_id: requestId,
+                prompt_len: prompt.length,
+                run_states: runStates.size,
+                active_runs: activeStreamRuns,
+            });
+
+            // Reset textarea height immediately, but keep the text until the backend acks it.
             const textarea = document.querySelector('textarea');
             if (textarea) textarea.style.height = '3.5rem';
 
-            // We don't add message to UI immediately, we wait for SSE
-            // But for better UX, we can optimistically add it if we want.
-            // However, since we now rely on SSE for all messages, let's wait for SSE echo.
-            // To avoid "lag", we can add a pending state?
-            // Let's just send the request.
-            
             try {
                 const response = await fetch('/api/chat', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ prompt })
+                    body: JSON.stringify({ prompt, request_id: requestId }),
+                    signal: currentSubmitAbortController.signal
                 });
 
-                if (!response.ok) throw new Error('Network response was not ok');
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok || (data && data.error)) throw new Error((data && data.error) ? data.error : 'Network response was not ok');
+
+                const runId = String(data.run_id || '');
+                pendingSubmissions.set(requestId, {
+                    request_id: requestId,
+                    run_id: runId,
+                    prompt_len: prompt.length,
+                    confirmed: false,
+                    startedAt: Date.now(),
+                });
+                submissionNotice.value = runId ? '后端已接收，等待模型输出...' : '后端已接收，等待响应...';
+                pushStreamDebug('send-queued', {
+                    request_id: requestId,
+                    run_id: runId,
+                    status: response.status,
+                });
+
+                inputMessage.value = '';
+                submitInFlight.value = false;
+                currentSubmitAbortController = null;
+                isTyping.value = true;
+                status.value.is_running = true;
+                status.value.needs_human_input = false;
+                setFloatingStateHint('running', 30000);
+                emitFloatingStatus(status.value, true, 'running');
             } catch (e) {
+                const aborted = e && (e.name === 'AbortError' || String(e).includes('aborted'));
                 console.error('Send failed:', e);
+                submitInFlight.value = false;
+                currentSubmitAbortController = null;
+                submissionNotice.value = aborted ? '已放弃当前等待' : '提交失败：' + e.message;
                 status.value.is_running = false;
                 setFloatingStateHint('idle');
                 emitFloatingStatus(status.value, false, 'error');
-                messages.value.push(makeMessage('assistant', '⚠️ Error sending message: ' + e.message));
                 isTyping.value = false;
             }
         };
@@ -1162,8 +1288,21 @@ createApp({
 
         const stopTask = async () => {
             try {
-                // Optimistically stop typing and finalize current message
-                const runIds = Array.from(runStates.keys());
+                pushStreamDebug('stop-start', {
+                    run_states: runStates.size,
+                    active_runs: activeStreamRuns,
+                });
+                if (currentSubmitAbortController) {
+                    try { currentSubmitAbortController.abort(); } catch {}
+                    currentSubmitAbortController = null;
+                }
+                const pendingRunIds = Array.from(pendingSubmissions.values())
+                    .map((x) => x && x.run_id ? String(x.run_id) : '')
+                    .filter(Boolean);
+                const activeRunIds = Array.from(runStates.keys());
+                const runIds = Array.from(new Set([...pendingRunIds, ...activeRunIds]));
+                pendingSubmissions.clear();
+                submitInFlight.value = false;
                 for (const rid of runIds) {
                     const st = runStates.get(rid);
                     if (!st) continue;
@@ -1188,12 +1327,14 @@ createApp({
                     runStates.delete(rid);
                 }
                 isTyping.value = false;
+                submissionNotice.value = runIds.length > 0 ? '已请求停止当前任务' : '已放弃当前等待';
                 
                 await fetch('/api/control', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ action: 'stop', run_ids: runIds })
                 });
+                pushStreamDebug('stop-requested', { run_ids: runIds.length });
                 fetchStatus();
             } catch (e) {
                 console.error('Stop task failed:', e);
@@ -1286,6 +1427,8 @@ createApp({
             visibleMessages,
             hiddenCount,
             isTyping,
+            submitInFlight,
+            submissionNotice,
             status,
             activeModal,
             openModal,
@@ -1353,3 +1496,5 @@ createApp({
          };
      }
 }).mount('#app');
+window.__A3_APP_READY__ = true;
+document.documentElement.classList.add('js-ready');

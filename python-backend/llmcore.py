@@ -128,7 +128,7 @@ def _load_mykeys():
                 print(f"[mykeys] SUCCESS loaded from {p}: keys={list(data.keys())}")
                 return {k: v for k, v in data.items() if not k.startswith('_')}
             except Exception as e:
-                print(f"[WARN] failed to parse {p}: {e}")
+                print(f"[WARN] failed to load {p}: {e}")
 
     # 检查打包资源目录（_MEIPASS/mykey.json 或 _MEIPASS/ga_config/mykey.json）
     try:
@@ -608,6 +608,9 @@ class ToolClient:
         self.auto_save_tokens = auto_save_tokens
         self.last_tools = ''
         self.total_cd_tokens = 0
+
+    def _model_response_log_path(self):
+        return temp_dir(root=backend_dir()).joinpath(f"model_responses_{os.getpid()}.txt")
 
     def chat(self, messages, tools=None):
         if self._should_use_structured_messages(messages):

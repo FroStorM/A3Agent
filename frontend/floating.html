@@ -163,6 +163,8 @@
       const applyStatus = (payload) => {
         const explicitState = payload?.state ? String(payload.state) : "";
         const uiState = payload?.ui_state ? String(payload.ui_state) : "";
+        const isRunning = !!payload?.is_running;
+        const needsHuman = !!payload?.needs_human_input;
         const resolved = explicitState || uiState;
 
         // 优先检查 needs_human_input
