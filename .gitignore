@@ -29,22 +29,44 @@ dist-ssr/
 ga_config/
 mykey.json
 python-backend/mykey.json
+.env
+.env.*
+!.env.example
+.python-version
 
 # Python build artifacts
 python-backend/build/
 python-backend/dist/
 python-backend/__pycache__/
 python-backend/chatapp/__pycache__/
+.venv/
+venv/
+env/
 **/__pycache__/
 *.pyc
 *.pyo
 *.pyd
 *.so
 *.dylib
+.coverage
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+coverage/
+htmlcov/
 
 # Runtime / temp data
 temp/
+tmp/
+*.tmp
 python-backend/temp/
+memory/file_access_stats.json
+memory/global_mem.txt
+memory/global_mem_insight.txt
+memory/history.txt
+memory/history.md
+memory/Insight.md
+python-backend/memory/file_access_stats.json
 python-backend/memory/global_mem.txt
 python-backend/memory/global_mem_insight.txt
 python-backend/memory/history.txt
