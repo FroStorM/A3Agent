@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>A3Agent 用户配置管理</title>
+    <link rel="stylesheet" href="/vendor/tailwind.css">
+    <script src="/vendor/vue.global.js"></script>
+    <script src="/vendor/lucide.min.js"></script>
+    <style>
+        [v-cloak] { display: none; }
+    </style>
+</head>
+<body class="min-h-screen bg-slate-100 text-slate-900">
+    <div id="admin-configs-app" v-cloak>
+        <div v-if="authReady && !currentUser" class="min-h-screen flex items-center justify-center p-6">
+            <div class="w-full max-w-md rounded-3xl border border-slate-200 bg-white p-8 shadow-xl space-y-4">
+                <div>
+                    <div class="text-sm uppercase tracking-[0.25em] text-slate-400">Admin</div>
+                    <h1 class="text-2xl font-semibold">用户配置管理登录</h1>
+                </div>
+                <input v-model="loginUsername" @keydown.enter.prevent="login" class="w-full rounded-xl border border-slate-200 px-4 py-3 text-sm" placeholder="管理员用户名" />
+                <input v-model="loginPassword" @keydown.enter.prevent="login" type="password" class="w-full rounded-xl border border-slate-200 px-4 py-3 text-sm" placeholder="密码" />
+                <div v-if="authError" class="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600">{{ authError }}</div>
+                <button @click="login" :disabled="loginBusy" class="w-full rounded-xl bg-slate-900 px-4 py-3 text-sm text-white">{{ loginBusy ? '登录中...' : '登录后台' }}</button>
+            </div>
+        </div>
+
+        <div v-else-if="authReady && currentUser && !isAdmin" class="min-h-screen flex items-center justify-center p-6">
+            <div class="w-full max-w-lg rounded-3xl border border-slate-200 bg-white p-8 shadow-xl text-center space-y-4">
+                <h1 class="text-2xl font-semibold">无后台权限</h1>
+                <p class="text-sm text-slate-500">当前账号不是管理员，请使用管理员账号登录。</p>
+                <div class="flex justify-center gap-3">
+                    <a href="/" class="rounded-xl bg-slate-200 px-4 py-2 text-sm">返回用户页</a>
+                    <button @click="logout" class="rounded-xl bg-slate-900 px-4 py-2 text-sm text-white">退出登录</button>
+                </div>
+            </div>
+        </div>
+
+        <div v-else-if="authReady && currentUser && isAdmin" class="min-h-screen">
+            <header class="sticky top-0 z-20 border-b border-slate-200 bg-white/95 backdrop-blur">
+                <div class="mx-auto flex max-w-[1600px] items-center justify-between px-6 py-4">
+                    <div>
+                        <div class="text-sm uppercase tracking-[0.28em] text-slate-400">A3Agent Admin</div>
+                        <h1 class="text-2xl font-semibold">用户配置管理</h1>
+                    </div>
+                    <div class="flex items-center gap-3">
+                        <a href="/admin/accounts" class="rounded-xl bg-slate-200 px-4 py-2 text-sm">账户管理</a>
+                        <a href="/admin/configs" class="rounded-xl bg-slate-900 px-4 py-2 text-sm text-white">配置管理</a>
+                        <a href="/" class="rounded-xl bg-slate-200 px-4 py-2 text-sm">用户页</a>
+                        <button @click="logout" class="rounded-xl bg-slate-200 px-4 py-2 text-sm">退出</button>
+                    </div>
+                </div>
+            </header>
+
+            <main class="mx-auto max-w-[1600px] p-6 space-y-6">
+                <section class="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+                    <div class="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+                        <div class="space-y-2">
+                            <div class="text-lg font-semibold">按用户管理 `ga_config`</div>
+                            <p class="max-w-3xl text-sm text-slate-500">
+                                这个页面只处理用户配置目录。先在左侧选用户，再在中间选择配置文件，右侧就可以直接阅读、修改、上传或分发到其他用户的对应目录。
+                            </p>
+                        </div>
+                        <div class="grid gap-2 text-sm text-slate-600 sm:grid-cols-3">
+                            <div class="rounded-2xl bg-slate-50 px-4 py-3">当前管理员：{{ currentUser.username }}</div>
+                            <div class="rounded-2xl bg-slate-50 px-4 py-3">已加载用户：{{ adminUsers.length }}</div>
+                            <div class="rounded-2xl bg-slate-50 px-4 py-3">当前配置目录：{{ selectedAdminUsername ? (selectedAdminUsername + '/ga_config') : '未选择用户' }}</div>
+                        </div>
+                    </div>
+                </section>
+
+                <div v-if="adminNotice" class="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{{ adminNotice }}</div>
+                <div v-if="adminError" class="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600">{{ adminError }}</div>
+
+                <div class="grid grid-cols-1 gap-6 xl:grid-cols-[300px_360px_1fr]">
+                    <section class="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <div class="text-lg font-semibold">用户列表</div>
+                                <div class="text-sm text-slate-500">选择要查看配置的用户</div>
+                            </div>
+                            <button @click="fetchAdminUsers(); fetchAdminFiles();" class="rounded-xl bg-slate-200 px-3 py-2 text-sm">刷新</button>
+                        </div>
+                        <div class="rounded-2xl border border-slate-200 divide-y divide-slate-100 max-h-[760px] overflow-auto">
+                            <button
+                                v-for="user in adminUsers"
+                                :key="user.id"
+                                @click="chooseAdminUser(user.username)"
+                                class="w-full px-4 py-3 text-left hover:bg-slate-50"
+                                :class="selectedAdminUsername === user.username ? 'bg-blue-50' : ''"
+                            >
+                                <div class="flex items-center justify-between gap-3">
+                                    <div>
+                                        <div class="font-medium">{{ user.username }}</div>
+                                        <div class="text-xs text-slate-400">{{ user.is_active ? '账号启用中' : '账号已禁用' }}</div>
+                                    </div>
+                                    <span v-if="user.is_admin" class="rounded-full bg-blue-100 px-2 py-1 text-[10px] text-blue-700">Admin</span>
+                                </div>
+                            </button>
+                        </div>
+                    </section>
+
+                    <section class="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <div class="text-lg font-semibold">配置文件列表</div>
+                                <div class="text-sm text-slate-500">展示所选用户 `ga_config` 下全部文件</div>
+                            </div>
+                            <button @click="fetchAdminFiles" :disabled="!selectedAdminUsername" class="rounded-xl bg-slate-200 px-3 py-2 text-sm disabled:opacity-50">刷新</button>
+                        </div>
+                        <div v-if="!selectedAdminUsername" class="rounded-2xl border border-dashed border-slate-300 px-4 py-8 text-center text-sm text-slate-500">
+                            先从左侧选择一个用户
+                        </div>
+                        <div v-else class="rounded-2xl border border-slate-200 divide-y divide-slate-100 max-h-[760px] overflow-auto">
+                            <button
+                                v-for="item in adminFiles"
+                                :key="item.kind + ':' + item.path"
+                                @click="item.kind === 'file' ? selectAdminFile(item.path) : null"
+                                class="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-slate-50"
+                                :class="selectedAdminFilePath === item.path ? 'bg-blue-50' : ''"
+                            >
+                                <i :data-lucide="item.kind === 'dir' ? 'folder-open' : 'file-text'" class="h-4 w-4 shrink-0 text-slate-500"></i>
+                                <div class="min-w-0 flex-1">
+                                    <div class="truncate font-medium text-sm">{{ item.path }}</div>
+                                    <div class="text-xs text-slate-400">{{ item.kind === 'dir' ? '文件夹' : '文件' }}</div>
+                                </div>
+                            </button>
+                            <div v-if="!adminFiles.length" class="px-4 py-8 text-center text-sm text-slate-500">
+                                该用户的 `ga_config` 目录当前没有可管理文件
+                            </div>
+                        </div>
+                    </section>
+
+                    <section class="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
+                        <div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                            <div>
+                                <div class="text-lg font-semibold">配置内容</div>
+                                <div class="break-all text-sm text-slate-500">{{ selectedAdminFilePath || '尚未选择文件' }}</div>
+                            </div>
+                            <div class="flex flex-wrap gap-2">
+                                <button v-if="selectedAdminFilePath && !adminFileEditMode" @click="startEditAdminFile" class="rounded-xl bg-slate-200 px-4 py-2 text-sm">编辑</button>
+                                <button v-if="selectedAdminFilePath && adminFileEditMode" @click="saveAdminFile" class="rounded-xl bg-slate-900 px-4 py-2 text-sm text-white">保存</button>
+                                <button v-if="selectedAdminFilePath && adminFileEditMode" @click="cancelEditAdminFile" class="rounded-xl bg-slate-200 px-4 py-2 text-sm">取消</button>
+                                <button v-if="selectedAdminFilePath" @click="openDistributeModal" class="rounded-xl bg-blue-600 px-4 py-2 text-sm text-white">分发</button>
+                            </div>
+                        </div>
+
+                        <div v-if="!selectedAdminFilePath" class="rounded-2xl border border-dashed border-slate-300 px-4 py-12 text-center text-sm text-slate-500">
+                            从中间列表选择一个配置文件后，就可以直接查看和修改内容
+                        </div>
+                        <template v-else>
+                            <textarea
+                                v-if="adminFileEditMode"
+                                v-model="adminFileDraft"
+                                class="h-[420px] w-full rounded-2xl border border-slate-200 px-4 py-4 font-mono text-sm"
+                            ></textarea>
+                            <textarea
+                                v-else
+                                :value="adminFileContent"
+                                readonly
+                                class="h-[420px] w-full rounded-2xl border border-slate-200 px-4 py-4 font-mono text-sm bg-slate-50"
+                            ></textarea>
+                        </template>
+
+                        <div class="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_auto]">
+                            <div class="rounded-2xl border border-slate-200 p-4 space-y-3">
+                                <div class="font-medium">上传或覆盖配置文件</div>
+                                <div class="text-sm text-slate-500">默认写入当前文件路径，也可以改成同目录下的新目标路径。</div>
+                                <input v-model="adminUploadPath" class="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm" placeholder="例如 prompts/system.txt" />
+                            </div>
+                            <label class="flex cursor-pointer items-center justify-center rounded-2xl bg-slate-900 px-6 py-4 text-sm text-white">
+                                <input type="file" class="hidden" @change="uploadAdminFile" />
+                                选择文件上传
+                            </label>
+                        </div>
+
+                        <div class="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600 space-y-2">
+                            <div class="font-medium text-slate-900">分发规则</div>
+                            <div>点击“分发”后会弹出完整用户列表，可多选或全选。</div>
+                            <div>确认后，当前文件会复制到目标用户的 `ga_config` 相同相对路径下；如果你修改了目标路径，则会复制到新的相对路径。</div>
+                        </div>
+                    </section>
+                </div>
+            </main>
+
+            <div v-if="distributeModalOpen" class="fixed inset-0 z-30 flex items-center justify-center bg-slate-950/45 p-4">
+                <div class="w-full max-w-2xl rounded-3xl border border-slate-200 bg-white p-6 shadow-2xl space-y-5">
+                    <div class="flex items-start justify-between gap-4">
+                        <div>
+                            <h2 class="text-xl font-semibold">分发配置文件</h2>
+                            <div class="mt-1 break-all text-sm text-slate-500">{{ selectedAdminUsername }}/ga_config/{{ selectedAdminFilePath }}</div>
+                        </div>
+                        <button @click="closeDistributeModal" class="rounded-xl bg-slate-200 px-3 py-2 text-sm">关闭</button>
+                    </div>
+
+                    <div class="space-y-2">
+                        <div class="text-sm font-medium">目标路径</div>
+                        <input v-model="distributeTargetPath" class="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm" placeholder="保持默认即可分发到同名路径" />
+                        <div class="text-xs text-slate-500">这里填写的是 `ga_config` 下的相对路径，例如 `prompts/system.txt`。</div>
+                    </div>
+
+                    <div class="flex items-center justify-between">
+                        <div class="text-sm font-medium">选择接收用户</div>
+                        <button @click="toggleAllTargets" class="rounded-xl bg-slate-200 px-3 py-2 text-sm">{{ allTargetsSelected ? '取消全选' : '全选' }}</button>
+                    </div>
+
+                    <div class="grid max-h-[360px] grid-cols-1 gap-3 overflow-auto rounded-2xl border border-slate-200 p-3 sm:grid-cols-2">
+                        <label
+                            v-for="user in distributableUsers"
+                            :key="'dist-' + user.id"
+                            class="flex cursor-pointer items-center justify-between rounded-2xl border border-slate-200 px-4 py-3 hover:bg-slate-50"
+                        >
+                            <div>
+                                <div class="font-medium">{{ user.username }}</div>
+                                <div class="text-xs text-slate-400">{{ user.is_active ? '账号启用中' : '账号已禁用' }}</div>
+                            </div>
+                            <input type="checkbox" :checked="distributeTargets.includes(user.username)" @change="toggleTarget(user.username)" />
+                        </label>
+                        <div v-if="!distributableUsers.length" class="col-span-full px-4 py-10 text-center text-sm text-slate-500">
+                            没有可分发的其他用户
+                        </div>
+                    </div>
+
+                    <div class="flex items-center justify-between gap-4">
+                        <div class="text-sm text-slate-500">已选择 {{ distributeTargets.length }} 个用户</div>
+                        <div class="flex gap-2">
+                            <button @click="closeDistributeModal" class="rounded-xl bg-slate-200 px-4 py-2 text-sm">取消</button>
+                            <button @click="distributeCurrentFile" class="rounded-xl bg-blue-600 px-4 py-2 text-sm text-white">确认分发</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <script src="/admin-configs.js?v=2"></script>
+</body>
+</html>

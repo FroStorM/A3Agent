@@ -8,9 +8,11 @@ import asyncio
 import queue
 import traceback
 import shutil
+import sqlite3
+from typing import Optional
 from datetime import datetime
-from fastapi import FastAPI, Request
-from fastapi.responses import StreamingResponse, FileResponse
+from fastapi import FastAPI, Request, UploadFile, File, Form
+from fastapi.responses import StreamingResponse, FileResponse, RedirectResponse
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,6 +20,8 @@ import importlib
 import importlib.util
 import re
 import uuid
+import user_store
+from runtime_context import scoped_runtime_context, get_runtime_value
 from path_utils import (
     app_data_dir,
     config_dir_name,
@@ -63,6 +67,7 @@ def resolve_frontend_dir():
 app = FastAPI()
 API_LOG = "/tmp/a3agent-api.log"
 STREAM_DEBUG_LOG = "/tmp/a3agent-stream-debug.log"
+SESSION_COOKIE_NAME = "ga_session"
 
 
 def _env_flag(name, default=False):
@@ -74,6 +79,168 @@ def _env_flag(name, default=False):
 
 def should_serve_frontend():
     return _env_flag("GA_SERVE_FRONTEND", default=True)
+
+
+def _get_auth_store_root():
+    return str(app_data_dir())
+
+
+def _safe_username(value):
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{3,64}", value):
+        return None
+    return value
+
+
+def _safe_email(value):
+    try:
+        return user_store.normalize_email(value)
+    except Exception:
+        return None
+
+
+def _slugify_username(value):
+    return _safe_username(value)
+
+
+def get_user_workspace_root(username):
+    workspace_root = get_workspace_root_dir()
+    safe = _slugify_username(username)
+    if not safe:
+        raise ValueError("invalid username")
+    return os.path.join(workspace_root, "users", safe)
+
+
+def get_user_data_dir_for_username(username):
+    root = get_user_workspace_root(username)
+    cfg = os.path.join(root, _config_dir_name())
+    os.makedirs(cfg, exist_ok=True)
+    _ensure_default_ga_config(cfg)
+    _ensure_default_mykey(cfg)
+    return cfg
+
+
+def _session_token_from_request(request: Request):
+    token = request.cookies.get(SESSION_COOKIE_NAME)
+    if token:
+        return token
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        return auth[7:].strip()
+    return None
+
+
+def get_request_user(request: Request):
+    user = getattr(request.state, "user", None)
+    if user:
+        return user
+    token = _session_token_from_request(request)
+    if not token:
+        return None
+    user = user_store.get_user_by_session(_get_auth_store_root(), token)
+    request.state.user = user
+    return user
+
+
+def require_user(request: Request):
+    user = get_request_user(request)
+    if not user:
+        raise PermissionError("login required")
+    return user
+
+
+def require_admin(request: Request):
+    user = require_user(request)
+    if not user.get("is_admin"):
+        raise PermissionError("admin required")
+    return user
+
+
+def get_request_data_dir(request: Request, target_username=None, allow_admin_override=False):
+    user = require_user(request)
+    effective_username = user["username"]
+    if target_username:
+        safe_target = _safe_username(target_username)
+        if not safe_target:
+            raise ValueError("invalid target username")
+        if safe_target != effective_username:
+            if not allow_admin_override or not user.get("is_admin"):
+                raise PermissionError("admin required")
+            effective_username = safe_target
+    return get_user_data_dir_for_username(effective_username), effective_username
+
+
+def get_user_runtime(request: Request):
+    user = require_user(request)
+    runtime = runtime_registry.get_or_create(user["username"])
+    request.state.runtime = runtime
+    return runtime
+
+
+def _admin_file_root(base, scope):
+    if scope == "memory":
+        return os.path.join(base, "memory")
+    if scope == "schedule":
+        return os.path.join(base, "sche_tasks")
+    if scope == "config":
+        return base
+    raise ValueError("invalid scope")
+
+
+def _admin_safe_path(scope, rel_path):
+    if scope in ("memory", "schedule", "config"):
+        return _safe_rel_path(rel_path)
+    return None
+
+
+def _admin_root_and_path(username, scope, rel_path):
+    safe_username = _safe_username(username)
+    safe_path = _admin_safe_path(scope, rel_path)
+    if not safe_username or not safe_path:
+        raise ValueError("invalid username or path")
+    base = get_user_data_dir_for_username(safe_username)
+    root = os.path.abspath(_admin_file_root(base, scope))
+    target = os.path.abspath(os.path.join(root, safe_path))
+    if target != root and not target.startswith(root + os.sep):
+        raise ValueError("invalid path")
+    return safe_username, root, target, safe_path
+
+
+def _write_audit_log(actor_username, action, target_username=None, detail=None):
+    try:
+        user_store.add_audit_log(
+            _get_auth_store_root(),
+            actor_username=actor_username,
+            action=action,
+            target_username=target_username,
+            detail=json.dumps(detail, ensure_ascii=False) if isinstance(detail, (dict, list)) else detail,
+        )
+    except Exception:
+        pass
+
+
+def _get_user_limits(username):
+    user = user_store.get_user_by_username(_get_auth_store_root(), username)
+    if not user:
+        return {"max_parallel_runs": 1, "max_prompt_chars": 20000, "max_upload_bytes": 10485760}
+    return {
+        "max_parallel_runs": max(1, int(user.get("max_parallel_runs") or 1)),
+        "max_prompt_chars": max(100, int(user.get("max_prompt_chars") or 20000)),
+        "max_upload_bytes": max(1024, int(user.get("max_upload_bytes") or 10485760)),
+    }
+
+
+@app.middleware("http")
+async def load_request_user(request: Request, call_next):
+    try:
+        token = _session_token_from_request(request)
+        request.state.user = user_store.get_user_by_session(_get_auth_store_root(), token) if token else None
+    except Exception:
+        request.state.user = None
+    response = await call_next(request)
+    return response
 
 
 def _debug_log(kind, **fields):
@@ -231,6 +398,10 @@ def _workspace_config_dir(root):
 
 
 def get_workspace_root_dir():
+    runtime_root = get_runtime_value("workspace_root")
+    if runtime_root:
+        ensure_dir(runtime_root)
+        return str(runtime_root)
     root = normalize_workspace_root(os.environ.get("GA_WORKSPACE_ROOT"))
     if root is not None:
         root = ensure_dir(root)
@@ -248,6 +419,10 @@ def get_workspace_root_dir():
 
 
 def get_user_data_dir():
+    runtime_data_dir = get_runtime_value("user_data_dir")
+    if runtime_data_dir:
+        os.environ["GA_USER_DATA_DIR"] = str(runtime_data_dir)
+        return str(runtime_data_dir)
     root = get_workspace_root_dir()
     cfg = workspace_config_dir(root)
     os.environ["GA_WORKSPACE_ROOT"] = root
@@ -394,6 +569,8 @@ try:
     _base = get_user_data_dir()
     _ensure_default_ga_config(_base)
     _ensure_default_mykey(_base)
+    user_store.init_store(_get_auth_store_root())
+    user_store.ensure_bootstrap_admin(_get_auth_store_root())
 except Exception:
     pass
 
@@ -403,6 +580,12 @@ async def _log_startup():
     try:
         _ensure_default_ga_config(_base)
         _ensure_default_mykey(_base)
+    except Exception:
+        pass
+    try:
+        user_store.init_store(_get_auth_store_root())
+        user_store.ensure_bootstrap_admin(_get_auth_store_root())
+        user_store.cleanup_expired_sessions(_get_auth_store_root())
     except Exception:
         pass
     try:
@@ -722,13 +905,11 @@ class StreamManager:
 
     def broadcast(self, data):
         with self.lock:
-            for q in self.queues:
+            for q in list(self.queues):
                 q.put(data)
 
-stream_manager = StreamManager()
-
 # Helper to bridge Agent Queue to Stream Manager
-def process_agent_output(display_queue, source="user", prompt_text=None, run_id=None, cancel_event=None, request_id=None):
+def process_agent_output(user_state, stream_manager, display_queue, source="user", prompt_text=None, run_id=None, cancel_event=None, request_id=None):
     finished_normally = False
     def broadcast_state(state_name, reason=""):
         payload = {
@@ -740,7 +921,7 @@ def process_agent_output(display_queue, source="user", prompt_text=None, run_id=
         }
         if reason:
             payload["reason"] = reason
-        state.ui_state = state_name
+        user_state.ui_state = state_name
         print(f"[Status] broadcast state={state_name} source={source} run_id={run_id} reason={reason}")
         _debug_log("state", state=state_name, source=source, run_id=run_id, request_id=request_id, reason=reason)
         stream_manager.broadcast(json.dumps(payload))
@@ -799,7 +980,7 @@ def process_agent_output(display_queue, source="user", prompt_text=None, run_id=
                     done_text = item.get('done', '')
                     _debug_log("done", source=source, run_id=run_id, request_id=request_id, done_len=len(done_text), human_like=_looks_like_human_request(done_text))
                     if _looks_like_human_request(done_text):
-                        state.set_human_input(item.get('done', ''), [])
+                        user_state.set_human_input(item.get('done', ''), [])
                         broadcast_state("need-user", "done suggests human input")
                     else:
                         broadcast_state("idle", "stream done")
@@ -814,10 +995,10 @@ def process_agent_output(display_queue, source="user", prompt_text=None, run_id=
                 break
     finally:
         try:
-            state.finish_run(run_id)
+            user_state.finish_run(run_id)
         except Exception:
             pass
-        if not finished_normally and not getattr(state.agent, "is_running", False):
+        if not finished_normally and not getattr(user_state.agent, "is_running", False):
             broadcast_state("idle", "run finished")
 
 # Global State
@@ -895,56 +1076,129 @@ class FallbackAgent:
         q.put({"done": f"服务初始化失败：{self._err}"})
         return q
 
-state = AppState()
+class UserRuntime(AppState):
+    def __init__(self, username, workspace_root, user_data_dir):
+        super().__init__()
+        self.username = username
+        self.workspace_root = workspace_root
+        self.user_data_dir = user_data_dir
+        self.stream_manager = StreamManager()
 
-def init_agent():
+
+class RuntimeRegistry:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self._runtimes = {}
+
+    def get(self, username):
+        with self.lock:
+            return self._runtimes.get(username)
+
+    def get_or_create(self, username):
+        with self.lock:
+            runtime = self._runtimes.get(username)
+            if runtime is not None:
+                return runtime
+            user_data_dir = get_user_data_dir_for_username(username)
+            workspace_root = get_user_workspace_root(username)
+            runtime = UserRuntime(username, workspace_root, user_data_dir)
+            runtime.agent, runtime.agent_init_error = init_agent(runtime)
+            self._runtimes[username] = runtime
+            return runtime
+
+    def all(self):
+        with self.lock:
+            return list(self._runtimes.values())
+
+
+runtime_registry = RuntimeRegistry()
+
+
+def get_runtime_by_username(username):
+    return runtime_registry.get(username)
+
+
+def get_current_runtime():
+    username = get_runtime_value("username")
+    if not username:
+        return None
+    return runtime_registry.get(username)
+
+
+def _run_agent_thread(runtime, agent):
+    def _runner():
+        with scoped_runtime_context(
+            username=runtime.username,
+            workspace_root=runtime.workspace_root,
+            user_data_dir=runtime.user_data_dir,
+        ):
+            agent.run()
+    threading.Thread(target=_runner, daemon=True).start()
+
+
+def init_agent(runtime):
     try:
-        importlib.invalidate_caches()
-        if "mykey" in sys.modules:
-            del sys.modules["mykey"]
-        if "llmcore" in sys.modules:
-            importlib.reload(sys.modules["llmcore"])
-        else:
-            import llmcore  # noqa: F401
-        if "sidercall" in sys.modules:
-            importlib.reload(sys.modules["sidercall"])
-        else:
-            import sidercall  # noqa: F401
-        if "agentmain" in sys.modules:
-            importlib.reload(sys.modules["agentmain"])
-        import agentmain
-        agent = agentmain.GeneraticAgent()
-        agent.inc_out = True
-        if agent.llmclient is None:
-            print("Warning: No LLM client configured.")
-        threading.Thread(target=agent.run, daemon=True).start()
-        return agent, None
+        with scoped_runtime_context(
+            username=runtime.username,
+            workspace_root=runtime.workspace_root,
+            user_data_dir=runtime.user_data_dir,
+        ):
+            importlib.invalidate_caches()
+            if "mykey" in sys.modules:
+                del sys.modules["mykey"]
+            if "llmcore" in sys.modules:
+                importlib.reload(sys.modules["llmcore"])
+            else:
+                import llmcore  # noqa: F401
+            if "sidercall" in sys.modules:
+                importlib.reload(sys.modules["sidercall"])
+            else:
+                import sidercall  # noqa: F401
+            if "agentmain" in sys.modules:
+                importlib.reload(sys.modules["agentmain"])
+            import agentmain
+            agent = agentmain.GeneraticAgent()
+            agent.inc_out = True
+            if agent.llmclient is None:
+                print(f"Warning: No LLM client configured for user {runtime.username}.")
+            _run_agent_thread(runtime, agent)
+            return agent, None
     except Exception as e:
         err = str(e)
-        print(f"Warning: agent init failed: {err}")
+        print(f"Warning: agent init failed for user {runtime.username}: {err}")
         return FallbackAgent(err), err
-
-state.agent, state.agent_init_error = init_agent()
 
 # Autonomous Monitor Thread
 def autonomous_monitor():
     while True:
         time.sleep(10)
-        if state.autonomous_enabled and state.agent_init_error is None:
-            idle_time = time.time() - state.last_activity_time
-            if idle_time > state.autonomous_threshold: 
-                if not state.agent.is_running:
-                    print(f"Triggering autonomous action (Idle: {int(idle_time)}s)")
-                    # Update time to prevent double trigger
-                    state.last_activity_time = time.time()
-                    
-                    # Construct the autonomous prompt
-                    prompt = f"Current Time: {time.strftime('%Y-%m-%d %H:%M:%S')}. You are in autonomous mode (idle for >{int(state.autonomous_threshold/60)}m). Check pending tasks, explore, or perform maintenance."
-                    display_queue = state.agent.put_task(prompt, source="autonomous")
-                    run_id, cancel_event = state.new_run()
-                    # Start background task to broadcast output
-                    threading.Thread(target=process_agent_output, args=(display_queue, "autonomous", prompt, run_id, cancel_event), daemon=True).start()
-        
+        for runtime in runtime_registry.all():
+            try:
+                if not runtime.autonomous_enabled or runtime.agent_init_error is not None:
+                    continue
+                limits = _get_user_limits(runtime.username)
+                if len(runtime.active_runs) >= limits["max_parallel_runs"]:
+                    continue
+                idle_time = time.time() - runtime.last_activity_time
+                if idle_time <= runtime.autonomous_threshold:
+                    continue
+                if runtime.agent.is_running:
+                    continue
+                print(f"Triggering autonomous action for {runtime.username} (Idle: {int(idle_time)}s)")
+                runtime.last_activity_time = time.time()
+                prompt = f"Current Time: {time.strftime('%Y-%m-%d %H:%M:%S')}. You are in autonomous mode (idle for >{int(runtime.autonomous_threshold/60)}m). Check pending tasks, explore, or perform maintenance."
+                with scoped_runtime_context(username=runtime.username, workspace_root=runtime.workspace_root, user_data_dir=runtime.user_data_dir):
+                    display_queue = runtime.agent.put_task(prompt, source="autonomous")
+                run_id, cancel_event = runtime.new_run()
+                threading.Thread(
+                    target=process_agent_output,
+                    args=(runtime, runtime.stream_manager, display_queue, "autonomous", prompt, run_id, cancel_event),
+                    daemon=True,
+                ).start()
+            except Exception:
+                pass
+
+
 threading.Thread(target=autonomous_monitor, daemon=True).start()
 
 def _parse_task_time(filename):
@@ -962,40 +1216,49 @@ def _parse_task_time(filename):
 def scheduler_monitor():
     while True:
         time.sleep(1)
-        if not state.scheduler_enabled or state.agent_init_error is not None:
-            time.sleep(1)
-            continue
-        try:
-            base = get_user_data_dir()
-            pending_dir = os.path.join(base, "sche_tasks", "pending")
-            running_dir = os.path.join(base, "sche_tasks", "running")
-            os.makedirs(pending_dir, exist_ok=True)
-            os.makedirs(running_dir, exist_ok=True)
-            now = time.time()
-            due = []
-            for fn in os.listdir(pending_dir):
-                ts = _parse_task_time(fn)
-                if ts is not None and ts <= now:
-                    due.append((ts, fn))
-            due.sort()
-            for _, fn in due[:1]:
-                src = os.path.join(pending_dir, fn)
-                dst = os.path.join(running_dir, fn)
-                try:
-                    os.rename(src, dst)
-                except Exception:
-                    continue
-                try:
-                    raw = _read_text(dst)
-                except Exception:
-                    raw = ""
-                prompt = f"按scheduled_task_sop执行任务文件 ./sche_tasks/running/{fn}（立刻移到done）\n内容：\n{raw}"
-                display_queue = state.agent.put_task(prompt, source="scheduler")
-                run_id, cancel_event = state.new_run()
-                threading.Thread(target=process_agent_output, args=(display_queue, "scheduler", prompt, run_id, cancel_event), daemon=True).start()
-        except Exception:
-            pass
-        time.sleep(max(1, int(state.scheduler_interval)))
+        for runtime in runtime_registry.all():
+            if not runtime.scheduler_enabled or runtime.agent_init_error is not None:
+                continue
+            limits = _get_user_limits(runtime.username)
+            if len(runtime.active_runs) >= limits["max_parallel_runs"]:
+                time.sleep(max(1, int(runtime.scheduler_interval)))
+                continue
+            try:
+                with scoped_runtime_context(username=runtime.username, workspace_root=runtime.workspace_root, user_data_dir=runtime.user_data_dir):
+                    base = get_user_data_dir()
+                    pending_dir = os.path.join(base, "sche_tasks", "pending")
+                    running_dir = os.path.join(base, "sche_tasks", "running")
+                    os.makedirs(pending_dir, exist_ok=True)
+                    os.makedirs(running_dir, exist_ok=True)
+                    now = time.time()
+                    due = []
+                    for fn in os.listdir(pending_dir):
+                        ts = _parse_task_time(fn)
+                        if ts is not None and ts <= now:
+                            due.append((ts, fn))
+                    due.sort()
+                    for _, fn in due[:1]:
+                        src = os.path.join(pending_dir, fn)
+                        dst = os.path.join(running_dir, fn)
+                        try:
+                            os.rename(src, dst)
+                        except Exception:
+                            continue
+                        try:
+                            raw = _read_text(dst)
+                        except Exception:
+                            raw = ""
+                        prompt = f"按scheduled_task_sop执行任务文件 ./sche_tasks/running/{fn}（立刻移到done）\n内容：\n{raw}"
+                        display_queue = runtime.agent.put_task(prompt, source="scheduler")
+                        run_id, cancel_event = runtime.new_run()
+                        threading.Thread(
+                            target=process_agent_output,
+                            args=(runtime, runtime.stream_manager, display_queue, "scheduler", prompt, run_id, cancel_event),
+                            daemon=True,
+                        ).start()
+            except Exception:
+                pass
+            time.sleep(max(1, int(runtime.scheduler_interval)))
 
 threading.Thread(target=scheduler_monitor, daemon=True).start()
 
@@ -1009,7 +1272,11 @@ app.add_middleware(
 )
 
 @app.get("/api/status")
-def get_status():
+def get_status(request: Request):
+    try:
+        state = get_user_runtime(request)
+    except PermissionError as e:
+        return JSONResponse(status_code=403, content={"error": str(e)})
     try:
         idle_time = int(time.time() - state.last_activity_time)
         llmclient = getattr(state.agent, "llmclient", None)
@@ -1056,12 +1323,607 @@ def get_status():
         }
 
 @app.get("/api/history")
-def get_history():
+def get_history(request: Request):
+    try:
+        state = get_user_runtime(request)
+    except PermissionError as e:
+        return JSONResponse(status_code=403, content={"error": str(e)})
     return {"history": state.agent.history}
+
+
+@app.get("/api/auth/me")
+def auth_me(request: Request):
+    user = get_request_user(request)
+    return {"authenticated": bool(user), "user": user}
+
+
+@app.post("/api/auth/login")
+async def auth_login(request: Request):
+    data = await request.json()
+    username = _safe_username(data.get("username"))
+    password = data.get("password")
+    if not username or not isinstance(password, str) or not password:
+        return JSONResponse(status_code=400, content={"error": "username/password required"})
+    user = user_store.authenticate_user(_get_auth_store_root(), username, password)
+    if not user:
+        return JSONResponse(status_code=401, content={"error": "invalid credentials"})
+    session = user_store.create_session(_get_auth_store_root(), user["id"])
+    response = JSONResponse({"status": "ok", "user": user, "expires_at": session["expires_at"]})
+    response.set_cookie(
+        SESSION_COOKIE_NAME,
+        session["token"],
+        httponly=True,
+        samesite="lax",
+        max_age=user_store.SESSION_TTL_SECONDS,
+        path="/",
+    )
+    return response
+
+
+@app.post("/api/auth/register")
+async def auth_register(request: Request):
+    data = await request.json()
+    username = _safe_username(data.get("username"))
+    email = _safe_email(data.get("email"))
+    password = data.get("password")
+    confirm_password = data.get("confirm_password")
+    if not username:
+        return JSONResponse(status_code=400, content={"error": "valid username required"})
+    if not email:
+        return JSONResponse(status_code=400, content={"error": "valid email required"})
+    if not isinstance(password, str) or len(password) < 6:
+        return JSONResponse(status_code=400, content={"error": "password must be at least 6 characters"})
+    if confirm_password is not None and password != confirm_password:
+        return JSONResponse(status_code=400, content={"error": "password confirmation does not match"})
+    try:
+        user = user_store.create_user(_get_auth_store_root(), username, password, is_admin=False, email=email)
+    except sqlite3.IntegrityError as e:
+        detail = str(e).lower()
+        if "email" in detail:
+            return JSONResponse(status_code=409, content={"error": "email already exists"})
+        return JSONResponse(status_code=409, content={"error": "username already exists"})
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    get_user_data_dir_for_username(username)
+    session = user_store.create_session(_get_auth_store_root(), user["id"])
+    _write_audit_log(user["username"], "self_register", target_username=user["username"], detail={"email": email})
+    response = JSONResponse({"status": "ok", "user": user, "expires_at": session["expires_at"]})
+    response.set_cookie(
+        SESSION_COOKIE_NAME,
+        session["token"],
+        httponly=True,
+        samesite="lax",
+        max_age=user_store.SESSION_TTL_SECONDS,
+        path="/",
+    )
+    return response
+
+
+@app.post("/api/auth/logout")
+def auth_logout(request: Request):
+    token = _session_token_from_request(request)
+    if token:
+        user_store.delete_session(_get_auth_store_root(), token)
+    response = JSONResponse({"status": "ok"})
+    response.delete_cookie(SESSION_COOKIE_NAME, path="/")
+    return response
+
+
+@app.post("/api/auth/change_password")
+async def auth_change_password(request: Request):
+    try:
+        user = require_user(request)
+    except PermissionError as e:
+        return JSONResponse(status_code=403, content={"error": str(e)})
+    data = await request.json()
+    old_password = data.get("old_password")
+    new_password = data.get("new_password")
+    confirm_password = data.get("confirm_password")
+    if not isinstance(old_password, str) or not old_password:
+        return JSONResponse(status_code=400, content={"error": "old password required"})
+    if not isinstance(new_password, str) or len(new_password) < 6:
+        return JSONResponse(status_code=400, content={"error": "new password must be at least 6 characters"})
+    if confirm_password is not None and new_password != confirm_password:
+        return JSONResponse(status_code=400, content={"error": "password confirmation does not match"})
+    try:
+        user_store.change_password(_get_auth_store_root(), user["username"], old_password, new_password)
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    token = _session_token_from_request(request)
+    session = user_store.create_session(_get_auth_store_root(), user["id"])
+    response = JSONResponse({"status": "ok"})
+    if token:
+        user_store.delete_session(_get_auth_store_root(), token)
+    response.set_cookie(
+        SESSION_COOKIE_NAME,
+        session["token"],
+        httponly=True,
+        samesite="lax",
+        max_age=user_store.SESSION_TTL_SECONDS,
+        path="/",
+    )
+    return response
+
+
+@app.get("/api/admin/users")
+def admin_list_users(
+    request: Request,
+    q: str = "",
+    role: str = "all",
+    status: str = "all",
+    page: int = 1,
+    page_size: int = 200,
+):
+    try:
+        require_admin(request)
+    except PermissionError as e:
+        return JSONResponse(status_code=403, content={"error": str(e)})
+    users = user_store.list_users(_get_auth_store_root())
+    q = str(q or "").strip().lower()
+    role = str(role or "all").strip().lower()
+    status = str(status or "all").strip().lower()
+    if q:
+        users = [u for u in users if q in str(u.get("username") or "").lower()]
+    if role == "admin":
+        users = [u for u in users if u.get("is_admin")]
+    elif role == "member":
+        users = [u for u in users if not u.get("is_admin")]
+    if status == "active":
+        users = [u for u in users if u.get("is_active")]
+    elif status == "disabled":
+        users = [u for u in users if not u.get("is_active")]
+    total = len(users)
+    page = max(1, int(page or 1))
+    page_size = min(500, max(1, int(page_size or 200)))
+    start = (page - 1) * page_size
+    end = start + page_size
+    return {
+        "users": users[start:end],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
+
+
+@app.post("/api/admin/users")
+async def admin_create_user(request: Request):
+    try:
+        admin_user = require_admin(request)
+    except PermissionError as e:
+        return JSONResponse(status_code=403, content={"error": str(e)})
+    data = await request.json()
+    username = _safe_username(data.get("username"))
+    email = _safe_email(data.get("email")) if data.get("email") else None
+    password = data.get("password")
+    is_admin = bool(data.get("is_admin"))
+    if not username or not isinstance(password, str) or len(password) < 6:
+        return JSONResponse(status_code=400, content={"error": "valid username and password required"})
+    try:
+        user = user_store.create_user(_get_auth_store_root(), username, password, is_admin=is_admin, email=email)
+    except sqlite3.IntegrityError:
+        return JSONResponse(status_code=409, content={"error": "username or email already exists"})
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    get_user_data_dir_for_username(username)
+    _write_audit_log(admin_user["username"], "admin_create_user", target_username=username, detail={"is_admin": is_admin})
+    return {"status": "created", "user": user}
+
+
+@app.post("/api/admin/users/password")
+async def admin_reset_user_password(request: Request):
+    try:
+        admin_user = require_admin(request)
+    except PermissionError as e:
+        return JSONResponse(status_code=403, content={"error": str(e)})
+    data = await request.json()
+    username = _safe_username(data.get("username"))
+    new_password = data.get("new_password")
+    if not username:
+        return JSONResponse(status_code=400, content={"error": "valid username required"})
+    if not isinstance(new_password, str) or len(new_password) < 6:
+        return JSONResponse(status_code=400, content={"error": "new password must be at least 6 characters"})
+    try:
+        user = user_store.update_password(_get_auth_store_root(), username, new_password)
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    _write_audit_log(admin_user["username"], "admin_reset_password", target_username=username)
+    return {"status": "updated", "user": user}
+
+
+@app.post("/api/admin/users/status")
+async def admin_update_user_status(request: Request):
+    try:
+        admin_user = require_admin(request)
+    except PermissionError as e:
+        return JSONResponse(status_code=403, content={"error": str(e)})
+    data = await request.json()
+    username = _safe_username(data.get("username"))
+    is_active = data.get("is_active")
+    if not username or not isinstance(is_active, bool):
+        return JSONResponse(status_code=400, content={"error": "valid username and is_active required"})
+    if username == admin_user["username"] and not is_active:
+        return JSONResponse(status_code=400, content={"error": "cannot disable current admin account"})
+    try:
+        user = user_store.set_user_active(_get_auth_store_root(), username, is_active)
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    _write_audit_log(admin_user["username"], "admin_update_user_status", target_username=username, detail={"is_active": is_active})
+    return {"status": "updated", "user": user}
+
+
+@app.post("/api/admin/users/limits")
+async def admin_update_user_limits(request: Request):
+    try:
+        admin_user = require_admin(request)
+    except PermissionError as e:
+        return JSONResponse(status_code=403, content={"error": str(e)})
+    data = await request.json()
+    username = _safe_username(data.get("username"))
+    if not username:
+        return JSONResponse(status_code=400, content={"error": "valid username required"})
+    try:
+        user = user_store.set_user_limits(
+            _get_auth_store_root(),
+            username,
+            max_parallel_runs=data.get("max_parallel_runs"),
+            max_prompt_chars=data.get("max_prompt_chars"),
+            max_upload_bytes=data.get("max_upload_bytes"),
+        )
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    _write_audit_log(
+        admin_user["username"],
+        "admin_update_user_limits",
+        target_username=username,
+        detail={
+            "max_parallel_runs": user.get("max_parallel_runs"),
+            "max_prompt_chars": user.get("max_prompt_chars"),
+            "max_upload_bytes": user.get("max_upload_bytes"),
+        },
+    )
+    return {"status": "updated", "user": user}
+
+
+@app.get("/api/admin/files/tree")
+def admin_file_tree(request: Request, username: str, scope: str):
+    try:
+        require_admin(request)
+    except PermissionError as e:
+        return JSONResponse(status_code=403, content={"error": str(e)})
+    safe_username = _safe_username(username)
+    if not safe_username:
+        return JSONResponse(status_code=400, content={"error": "invalid username"})
+    try:
+        base = get_user_data_dir_for_username(safe_username)
+        root = _admin_file_root(base, scope)
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    os.makedirs(root, exist_ok=True)
+    items = []
+    root_abs = os.path.abspath(root)
+    for cur_root, dirs, files in os.walk(root_abs):
+        dirs[:] = [d for d in dirs if isinstance(d, str) and not d.startswith(".") and d != "__pycache__"]
+        rel_dir = os.path.relpath(cur_root, root_abs)
+        rel_dir = "" if rel_dir == "." else rel_dir.replace(os.sep, "/")
+        for d in dirs:
+            items.append({"path": f"{rel_dir}/{d}".strip("/"), "kind": "dir"})
+        for f in files:
+            if f.startswith("."):
+                continue
+            items.append({"path": f"{rel_dir}/{f}".strip("/"), "kind": "file"})
+    items.sort(key=lambda x: (x["kind"], x["path"]))
+    return {"items": items}
+
+
+@app.get("/api/admin/files/read")
+def admin_file_read(request: Request, username: str, scope: str, path: str):
+    try:
+        require_admin(request)
+    except PermissionError as e:
+        return JSONResponse(status_code=403, content={"error": str(e)})
+    safe_username = _safe_username(username)
+    safe_path = _admin_safe_path(scope, path)
+    if not safe_username or not safe_path:
+        return JSONResponse(status_code=400, content={"error": "invalid username or path"})
+    try:
+        base = get_user_data_dir_for_username(safe_username)
+        root = os.path.abspath(_admin_file_root(base, scope))
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    target = os.path.abspath(os.path.join(root, safe_path))
+    if target != root and not target.startswith(root + os.sep):
+        return JSONResponse(status_code=400, content={"error": "invalid path"})
+    if not os.path.isfile(target):
+        return JSONResponse(status_code=404, content={"error": "not found"})
+    return {"content": _read_text(target)}
+
+
+@app.post("/api/admin/files/write")
+async def admin_file_write(request: Request):
+    try:
+        admin_user = require_admin(request)
+    except PermissionError as e:
+        return JSONResponse(status_code=403, content={"error": str(e)})
+    data = await request.json()
+    safe_username = _safe_username(data.get("username"))
+    scope = data.get("scope")
+    safe_path = _admin_safe_path(scope, data.get("path"))
+    content = data.get("content")
+    if not safe_username or not safe_path or not isinstance(content, str):
+        return JSONResponse(status_code=400, content={"error": "invalid write request"})
+    try:
+        base = get_user_data_dir_for_username(safe_username)
+        root = os.path.abspath(_admin_file_root(base, scope))
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    target = os.path.abspath(os.path.join(root, safe_path))
+    if target != root and not target.startswith(root + os.sep):
+        return JSONResponse(status_code=400, content={"error": "invalid path"})
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    with open(target, "w", encoding="utf-8") as f:
+        f.write(content)
+    _write_audit_log(
+        admin_user["username"],
+        "admin_write_file",
+        target_username=safe_username,
+        detail={"scope": scope, "path": safe_path, "content_length": len(content)},
+    )
+    return {"status": "saved", "path": safe_path}
+
+
+@app.post("/api/admin/files/create")
+async def admin_file_create(request: Request):
+    try:
+        admin_user = require_admin(request)
+    except PermissionError as e:
+        return JSONResponse(status_code=403, content={"error": str(e)})
+    data = await request.json()
+    username = data.get("username")
+    scope = data.get("scope")
+    path = data.get("path")
+    kind = str(data.get("kind") or "file").strip().lower()
+    try:
+        safe_username, _root, target, safe_path = _admin_root_and_path(username, scope, path)
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    if os.path.exists(target):
+        return JSONResponse(status_code=409, content={"error": "path already exists"})
+    try:
+        if kind == "dir":
+            os.makedirs(target, exist_ok=False)
+        else:
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            with open(target, "w", encoding="utf-8") as f:
+                f.write("")
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    _write_audit_log(admin_user["username"], "admin_create_path", target_username=safe_username, detail={"scope": scope, "path": safe_path, "kind": kind})
+    return {"status": "created", "path": safe_path, "kind": kind}
+
+
+@app.post("/api/admin/files/rename")
+async def admin_file_rename(request: Request):
+    try:
+        admin_user = require_admin(request)
+    except PermissionError as e:
+        return JSONResponse(status_code=403, content={"error": str(e)})
+    data = await request.json()
+    username = data.get("username")
+    scope = data.get("scope")
+    old_path = data.get("old_path")
+    new_path = data.get("new_path")
+    try:
+        safe_username, _root, source, safe_old_path = _admin_root_and_path(username, scope, old_path)
+        _safe_username2, _root2, target, safe_new_path = _admin_root_and_path(username, scope, new_path)
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    if not os.path.exists(source):
+        return JSONResponse(status_code=404, content={"error": "source not found"})
+    if os.path.exists(target):
+        return JSONResponse(status_code=409, content={"error": "target already exists"})
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    try:
+        os.rename(source, target)
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    _write_audit_log(admin_user["username"], "admin_rename_path", target_username=safe_username, detail={"scope": scope, "old_path": safe_old_path, "new_path": safe_new_path})
+    return {"status": "renamed", "old_path": safe_old_path, "new_path": safe_new_path}
+
+
+@app.post("/api/admin/files/delete")
+async def admin_file_delete(request: Request):
+    try:
+        admin_user = require_admin(request)
+    except PermissionError as e:
+        return JSONResponse(status_code=403, content={"error": str(e)})
+    data = await request.json()
+    username = data.get("username")
+    scope = data.get("scope")
+    path = data.get("path")
+    try:
+        safe_username, _root, target, safe_path = _admin_root_and_path(username, scope, path)
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    if not os.path.exists(target):
+        return JSONResponse(status_code=404, content={"error": "path not found"})
+    try:
+        if os.path.isdir(target):
+            shutil.rmtree(target)
+            kind = "dir"
+        else:
+            os.remove(target)
+            kind = "file"
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    _write_audit_log(admin_user["username"], "admin_delete_path", target_username=safe_username, detail={"scope": scope, "path": safe_path, "kind": kind})
+    return {"status": "deleted", "path": safe_path, "kind": kind}
+
+
+@app.post("/api/admin/files/copy")
+async def admin_file_copy(request: Request):
+    try:
+        admin_user = require_admin(request)
+    except PermissionError as e:
+        return JSONResponse(status_code=403, content={"error": str(e)})
+    data = await request.json()
+    source_username = _safe_username(data.get("source_username"))
+    target_username = _safe_username(data.get("target_username"))
+    scope = data.get("scope")
+    rel_path = _admin_safe_path(scope, data.get("path"))
+    target_path = _admin_safe_path(scope, data.get("target_path") or data.get("path"))
+    if not source_username or not target_username or not rel_path or not target_path:
+        return JSONResponse(status_code=400, content={"error": "invalid copy request"})
+    try:
+        source_base = get_user_data_dir_for_username(source_username)
+        target_base = get_user_data_dir_for_username(target_username)
+        source_root = os.path.abspath(_admin_file_root(source_base, scope))
+        target_root = os.path.abspath(_admin_file_root(target_base, scope))
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    source_file = os.path.abspath(os.path.join(source_root, rel_path))
+    target_file = os.path.abspath(os.path.join(target_root, target_path))
+    if source_file != source_root and not source_file.startswith(source_root + os.sep):
+        return JSONResponse(status_code=400, content={"error": "invalid source path"})
+    if target_file != target_root and not target_file.startswith(target_root + os.sep):
+        return JSONResponse(status_code=400, content={"error": "invalid target path"})
+    if not os.path.isfile(source_file):
+        return JSONResponse(status_code=404, content={"error": "source not found"})
+    os.makedirs(os.path.dirname(target_file), exist_ok=True)
+    shutil.copy2(source_file, target_file)
+    _write_audit_log(
+        admin_user["username"],
+        "admin_copy_file",
+        target_username=target_username,
+        detail={"source_username": source_username, "scope": scope, "path": rel_path, "target_path": target_path},
+    )
+    return {"status": "copied"}
+
+
+@app.post("/api/admin/files/copy_batch")
+async def admin_file_copy_batch(request: Request):
+    try:
+        admin_user = require_admin(request)
+    except PermissionError as e:
+        return JSONResponse(status_code=403, content={"error": str(e)})
+    data = await request.json()
+    source_username = _safe_username(data.get("source_username"))
+    scope = data.get("scope")
+    rel_path = _admin_safe_path(scope, data.get("path"))
+    target_path = _admin_safe_path(scope, data.get("target_path") or data.get("path"))
+    raw_targets = data.get("target_usernames") or []
+    if not isinstance(raw_targets, list):
+        return JSONResponse(status_code=400, content={"error": "target_usernames must be a list"})
+    target_usernames = []
+    for item in raw_targets:
+        safe = _safe_username(item)
+        if safe and safe not in target_usernames:
+            target_usernames.append(safe)
+    if not source_username or not rel_path or not target_path or not target_usernames:
+        return JSONResponse(status_code=400, content={"error": "invalid batch copy request"})
+    try:
+        source_base = get_user_data_dir_for_username(source_username)
+        source_root = os.path.abspath(_admin_file_root(source_base, scope))
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    source_file = os.path.abspath(os.path.join(source_root, rel_path))
+    if source_file != source_root and not source_file.startswith(source_root + os.sep):
+        return JSONResponse(status_code=400, content={"error": "invalid source path"})
+    if not os.path.isfile(source_file):
+        return JSONResponse(status_code=404, content={"error": "source not found"})
+
+    copied = []
+    skipped = []
+    for username in target_usernames:
+        try:
+            target_base = get_user_data_dir_for_username(username)
+            target_root = os.path.abspath(_admin_file_root(target_base, scope))
+            target_file = os.path.abspath(os.path.join(target_root, target_path))
+            if target_file != target_root and not target_file.startswith(target_root + os.sep):
+                skipped.append({"username": username, "reason": "invalid target path"})
+                continue
+            os.makedirs(os.path.dirname(target_file), exist_ok=True)
+            shutil.copy2(source_file, target_file)
+            copied.append(username)
+        except Exception as e:
+            skipped.append({"username": username, "reason": str(e)})
+    _write_audit_log(
+        admin_user["username"],
+        "admin_copy_file_batch",
+        detail={
+            "source_username": source_username,
+            "scope": scope,
+            "path": rel_path,
+            "target_path": target_path,
+            "copied": copied,
+            "skipped": skipped,
+        },
+    )
+    return {"status": "copied", "copied": copied, "skipped": skipped, "count": len(copied)}
+
+
+@app.post("/api/admin/files/upload")
+async def admin_file_upload(
+    request: Request,
+    source_username: str = Form(...),
+    scope: str = Form(...),
+    target_path: str = Form(""),
+    file: UploadFile = File(...),
+):
+    try:
+        admin_user = require_admin(request)
+    except PermissionError as e:
+        return JSONResponse(status_code=403, content={"error": str(e)})
+    safe_username = _safe_username(source_username)
+    safe_target_path = _admin_safe_path(scope, target_path or getattr(file, "filename", ""))
+    if not safe_username or not safe_target_path:
+        return JSONResponse(status_code=400, content={"error": "invalid upload target"})
+    limits = _get_user_limits(safe_username)
+    try:
+        base = get_user_data_dir_for_username(safe_username)
+        root = os.path.abspath(_admin_file_root(base, scope))
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    target_file = os.path.abspath(os.path.join(root, safe_target_path))
+    if target_file != root and not target_file.startswith(root + os.sep):
+        return JSONResponse(status_code=400, content={"error": "invalid target path"})
+    content = await file.read()
+    if len(content) > limits["max_upload_bytes"]:
+        return JSONResponse(status_code=400, content={"error": f"upload exceeds limit ({limits['max_upload_bytes']} bytes)"})
+    os.makedirs(os.path.dirname(target_file), exist_ok=True)
+    with open(target_file, "wb") as f:
+        f.write(content)
+    _write_audit_log(
+        admin_user["username"],
+        "admin_upload_file",
+        target_username=safe_username,
+        detail={"scope": scope, "target_path": safe_target_path, "filename": getattr(file, "filename", ""), "size": len(content)},
+    )
+    return {"status": "uploaded", "path": safe_target_path, "size": len(content)}
+
+
+@app.get("/api/admin/audit_logs")
+def admin_audit_logs(request: Request, actor_username: str = "", target_username: str = "", action: str = "", limit: int = 100):
+    try:
+        require_admin(request)
+    except PermissionError as e:
+        return JSONResponse(status_code=403, content={"error": str(e)})
+    logs = user_store.list_audit_logs(
+        _get_auth_store_root(),
+        actor_username=_safe_username(actor_username) if actor_username else None,
+        target_username=_safe_username(target_username) if target_username else None,
+        action=str(action or "").strip() or None,
+        limit=limit,
+    )
+    return {"logs": logs}
 
 @app.get("/api/stream")
 async def stream(request: Request):
+    try:
+        state = get_user_runtime(request)
+    except PermissionError as e:
+        return JSONResponse(status_code=403, content={"error": str(e)})
     async def event_generator():
+        stream_manager = state.stream_manager
         q = stream_manager.add_queue()
         _debug_log("stream_connect", client=str(id(q)), queues=len(stream_manager.queues))
         try:
@@ -1099,6 +1961,11 @@ async def stream(request: Request):
 
 @app.post("/api/chat")
 async def chat(request: Request):
+    try:
+        user = require_user(request)
+        state = get_user_runtime(request)
+    except PermissionError as e:
+        return JSONResponse(status_code=403, content={"error": str(e)})
     if state.agent_init_error:
         return {"error": f"Agent init failed: {state.agent_init_error}"}
     t0 = time.time()
@@ -1110,25 +1977,35 @@ async def chat(request: Request):
     request_id = data.get("request_id")
     if not prompt:
         return {"error": "No prompt provided"}
+    limits = _get_user_limits(user["username"])
+    if len(str(prompt)) > limits["max_prompt_chars"]:
+        return JSONResponse(status_code=400, content={"error": f"prompt exceeds limit ({limits['max_prompt_chars']} chars)"})
+    if len(getattr(state, "active_runs", {}) or {}) >= limits["max_parallel_runs"]:
+        return JSONResponse(status_code=429, content={"error": f"concurrent run limit reached ({limits['max_parallel_runs']})"})
     _debug_log("chat_received", prompt_len=len(prompt), request_id=request_id, stopping=state.stopping, is_running=getattr(state.agent, "is_running", False))
     
     # Update activity time
     state.last_activity_time = time.time()
     
     # Put task into agent's queue
-    display_queue = state.agent.put_task(prompt, source="user")
+    with scoped_runtime_context(username=state.username, workspace_root=state.workspace_root, user_data_dir=state.user_data_dir):
+        display_queue = state.agent.put_task(prompt, source="user")
     run_id, cancel_event = state.new_run()
     _debug_log("chat_queued", run_id=run_id, request_id=request_id, prompt_len=len(prompt), stopping=state.stopping, is_running=getattr(state.agent, "is_running", False))
     
     # Start background task to broadcast output
     # Note: We pass prompt_text=prompt so it gets broadcasted back to all clients (including sender)
     # This simplifies frontend logic (just listen to stream)
-    threading.Thread(target=process_agent_output, args=(display_queue, "user", prompt, run_id, cancel_event, request_id), daemon=True).start()
+    threading.Thread(target=process_agent_output, args=(state, state.stream_manager, display_queue, "user", prompt, run_id, cancel_event, request_id), daemon=True).start()
     
     return {"status": "queued", "run_id": run_id, "request_id": request_id}
 
 @app.post("/api/control")
 async def control(request: Request):
+    try:
+        state = get_user_runtime(request)
+    except PermissionError as e:
+        return JSONResponse(status_code=403, content={"error": str(e)})
     data = await request.json()
     action = data.get("action")
     if state.agent_init_error and action != "reload_agent":
@@ -1154,7 +2031,7 @@ async def control(request: Request):
                 time.sleep(0.05)
             if getattr(state.agent, "is_running", False):
                 old = state.agent
-                state.agent, state.agent_init_error = init_agent()
+                state.agent, state.agent_init_error = init_agent(state)
                 try:
                     old.abort()
                 except Exception:
@@ -1169,15 +2046,18 @@ async def control(request: Request):
         idx = data.get("index")
         if idx is not None:
             try:
-                state.agent.next_llm(int(idx))
+                with scoped_runtime_context(username=state.username, workspace_root=state.workspace_root, user_data_dir=state.user_data_dir):
+                    state.agent.next_llm(int(idx))
             except Exception as e:
                 return {"error": str(e)}
         else:
-            state.agent.next_llm()
+            with scoped_runtime_context(username=state.username, workspace_root=state.workspace_root, user_data_dir=state.user_data_dir):
+                state.agent.next_llm()
         return {"status": "switched", "llm_name": state.agent.get_llm_name()}
     elif action == "clear_history":
         state.cancel_runs(None)
-        state.agent.clear_history()
+        with scoped_runtime_context(username=state.username, workspace_root=state.workspace_root, user_data_dir=state.user_data_dir):
+            state.agent.clear_history()
         return {"status": "cleared"}
     elif action == "toggle_autonomous":
         state.autonomous_enabled = not state.autonomous_enabled
@@ -1198,10 +2078,11 @@ async def control(request: Request):
     elif action == "reload_agent":
         state.cancel_runs(None)
         state.clear_human_input()
-        if hasattr(state.agent, "reload_config"):
-            state.agent.reload_config()
-        else:
-            state.agent, state.agent_init_error = init_agent()
+        with scoped_runtime_context(username=state.username, workspace_root=state.workspace_root, user_data_dir=state.user_data_dir):
+            if hasattr(state.agent, "reload_config"):
+                state.agent.reload_config()
+            else:
+                state.agent, state.agent_init_error = init_agent(state)
         return {"status": "reloaded", "agent_init_error": state.agent_init_error}
     elif action == "toggle_scheduler":
         state.scheduler_enabled = not state.scheduler_enabled
@@ -1215,8 +2096,11 @@ async def control(request: Request):
     return {"error": "Unknown action"}
 
 @app.get("/api/config/mykey")
-def get_mykey():
-    base = get_user_data_dir()
+def get_mykey(request: Request, username: Optional[str] = None):
+    try:
+        base, _ = get_request_data_dir(request, username, allow_admin_override=True)
+    except (PermissionError, ValueError) as e:
+        return JSONResponse(status_code=403 if isinstance(e, PermissionError) else 400, content={"error": str(e)})
     path = resolve_mykey_path(base, prefer_existing=True)
     return {"exists": bool(path and os.path.exists(path)), "path": str(path) if path else ""}
 
@@ -1226,15 +2110,21 @@ async def save_mykey(request: Request):
     content = data.get("content")
     if not isinstance(content, str):
         return JSONResponse(status_code=400, content={"error": "content must be string"})
-    base = get_user_data_dir()
+    try:
+        base, effective_username = get_request_data_dir(request, data.get("username"), allow_admin_override=True)
+    except (PermissionError, ValueError) as e:
+        return JSONResponse(status_code=403 if isinstance(e, PermissionError) else 400, content={"error": str(e)})
     path = resolve_mykey_path(base, prefer_existing=False)
     _write_text(path, content)
     _mirror_mykey_config(content, path)
     return {"status": "saved"}
 
 @app.get("/api/llm_configs")
-def list_llm_configs():
-    base = get_user_data_dir()
+def list_llm_configs(request: Request, username: Optional[str] = None):
+    try:
+        base, _ = get_request_data_dir(request, username, allow_admin_override=True)
+    except (PermissionError, ValueError) as e:
+        return JSONResponse(status_code=403 if isinstance(e, PermissionError) else 400, content={"error": str(e)})
     path = resolve_mykey_path(base, prefer_existing=True)
     module = _load_mykey_module_from_path(path)
     configs = _extract_llm_configs_from_module(module)
@@ -1273,10 +2163,14 @@ async def test_llm_config(request: Request):
     else:
         proxy = ""
 
+    try:
+        base_for_request, _ = get_request_data_dir(request, data.get("username"), allow_admin_override=True)
+    except (PermissionError, ValueError) as e:
+        return JSONResponse(status_code=403 if isinstance(e, PermissionError) else 400, content={"error": str(e)})
+
     if cid and not apikey:
         try:
-            base = get_user_data_dir()
-            path = resolve_mykey_path(base, prefer_existing=True)
+            path = resolve_mykey_path(base_for_request, prefer_existing=True)
             module = _load_mykey_module_from_path(path)
             v = module.get(cid)
             if isinstance(v, dict):
@@ -1341,7 +2235,11 @@ async def upsert_llm_config(request: Request):
         return JSONResponse(status_code=400, content={"error": "invalid type"})
 
     try:
-        base = get_user_data_dir()
+        base, _ = get_request_data_dir(request, data.get("username"), allow_admin_override=True)
+    except (PermissionError, ValueError) as e:
+        return JSONResponse(status_code=403 if isinstance(e, PermissionError) else 400, content={"error": str(e)})
+
+    try:
         read_path = resolve_mykey_path(base, prefer_existing=True)
         path = resolve_mykey_path(base, prefer_existing=False)
         module = _load_mykey_module_from_path(read_path)
@@ -1406,10 +2304,11 @@ async def upsert_llm_config(request: Request):
         _mirror_mykey_config(content, path)
         reload_error = ""
         try:
-            if hasattr(state, "agent") and hasattr(state.agent, "reload_config"):
-                state.agent.reload_config()
-                if hasattr(state, "agent_init_error"):
-                    state.agent_init_error = None
+            runtime = get_runtime_by_username(effective_username)
+            if runtime is not None and hasattr(runtime, "agent") and hasattr(runtime.agent, "reload_config"):
+                with scoped_runtime_context(username=runtime.username, workspace_root=runtime.workspace_root, user_data_dir=runtime.user_data_dir):
+                    runtime.agent.reload_config()
+                runtime.agent_init_error = None
         except Exception as e:
             reload_error = str(e)
             print(f"[WARN] agent reload after config save failed: {e}")
@@ -1425,7 +2324,10 @@ async def delete_llm_config(request: Request):
     cid = data.get("id")
     if not isinstance(cid, str) or not cid:
         return JSONResponse(status_code=400, content={"error": "id required"})
-    base = get_user_data_dir()
+    try:
+        base, effective_username = get_request_data_dir(request, data.get("username"), allow_admin_override=True)
+    except (PermissionError, ValueError) as e:
+        return JSONResponse(status_code=403 if isinstance(e, PermissionError) else 400, content={"error": str(e)})
     path = resolve_mykey_path(base, prefer_existing=False)
     read_path = resolve_mykey_path(base, prefer_existing=True)
     module = _load_mykey_module_from_path(read_path)
@@ -1436,11 +2338,23 @@ async def delete_llm_config(request: Request):
     content = _render_mykey_py(order, values)
     _write_text(path, content)
     _mirror_mykey_config(content, path)
+    runtime = get_runtime_by_username(effective_username)
+    if runtime is not None:
+        try:
+            with scoped_runtime_context(username=runtime.username, workspace_root=runtime.workspace_root, user_data_dir=runtime.user_data_dir):
+                if hasattr(runtime.agent, "reload_config"):
+                    runtime.agent.reload_config()
+            runtime.agent_init_error = None
+        except Exception as e:
+            print(f"[WARN] agent reload after config delete failed: {e}")
     return {"status": "deleted"}
 
 @app.get("/api/todo")
-def get_todo():
-    base = get_user_data_dir()
+def get_todo(request: Request, username: Optional[str] = None):
+    try:
+        base, _ = get_request_data_dir(request, username, allow_admin_override=True)
+    except (PermissionError, ValueError) as e:
+        return JSONResponse(status_code=403 if isinstance(e, PermissionError) else 400, content={"error": str(e)})
     path = os.path.join(base, "ToDo.txt")
     if os.path.exists(path):
         return {"exists": True, "content": _read_text(path)}
@@ -1452,14 +2366,20 @@ async def save_todo(request: Request):
     content = data.get("content")
     if not isinstance(content, str):
         return JSONResponse(status_code=400, content={"error": "content must be string"})
-    base = get_user_data_dir()
+    try:
+        base, _ = get_request_data_dir(request, data.get("username"), allow_admin_override=True)
+    except (PermissionError, ValueError) as e:
+        return JSONResponse(status_code=403 if isinstance(e, PermissionError) else 400, content={"error": str(e)})
     path = os.path.join(base, "ToDo.txt")
     _write_text(path, content)
     return {"status": "saved"}
 
 @app.get("/api/sop/list")
-def list_sops():
-    base = get_user_data_dir()
+def list_sops(request: Request, username: Optional[str] = None):
+    try:
+        base, _ = get_request_data_dir(request, username, allow_admin_override=True)
+    except (PermissionError, ValueError) as e:
+        return JSONResponse(status_code=403 if isinstance(e, PermissionError) else 400, content={"error": str(e)})
     _ensure_default_ga_config(base)
     mem_dir = os.path.join(base, "memory")
     if not os.path.isdir(mem_dir):
@@ -1482,11 +2402,14 @@ def list_sops():
     return {"files": out}
 
 @app.get("/api/sop/read")
-def read_sop(name: str):
+def read_sop(request: Request, name: str, username: Optional[str] = None):
     safe = _safe_rel_path(name)
     if not safe or not safe.endswith(".md"):
         return JSONResponse(status_code=400, content={"error": "invalid name"})
-    base = get_user_data_dir()
+    try:
+        base, _ = get_request_data_dir(request, username, allow_admin_override=True)
+    except (PermissionError, ValueError) as e:
+        return JSONResponse(status_code=403 if isinstance(e, PermissionError) else 400, content={"error": str(e)})
     _ensure_default_ga_config(base)
     mem_dir = os.path.join(base, "memory")
     mem_dir_abs = os.path.abspath(mem_dir)
@@ -1507,7 +2430,10 @@ async def write_sop(request: Request):
         return JSONResponse(status_code=400, content={"error": "invalid name"})
     if not isinstance(content, str):
         return JSONResponse(status_code=400, content={"error": "content must be string"})
-    base = get_user_data_dir()
+    try:
+        base, _ = get_request_data_dir(request, data.get("username"), allow_admin_override=True)
+    except (PermissionError, ValueError) as e:
+        return JSONResponse(status_code=403 if isinstance(e, PermissionError) else 400, content={"error": str(e)})
     _ensure_default_ga_config(base)
     mem_dir = os.path.join(base, "memory")
     mem_dir_abs = os.path.abspath(mem_dir)
@@ -1518,8 +2444,11 @@ async def write_sop(request: Request):
     return {"status": "saved"}
 
 @app.get("/api/schedule/list")
-def list_schedule():
-    base = get_user_data_dir()
+def list_schedule(request: Request, username: Optional[str] = None):
+    try:
+        base, _ = get_request_data_dir(request, username, allow_admin_override=True)
+    except (PermissionError, ValueError) as e:
+        return JSONResponse(status_code=403 if isinstance(e, PermissionError) else 400, content={"error": str(e)})
     result = {}
     for bucket in ("pending", "running", "done"):
         d = os.path.join(base, "sche_tasks", bucket)
@@ -1530,13 +2459,16 @@ def list_schedule():
     return result
 
 @app.get("/api/schedule/read")
-def read_schedule(bucket: str, name: str):
+def read_schedule(request: Request, bucket: str, name: str, username: Optional[str] = None):
     if bucket not in ("pending", "running", "done"):
         return JSONResponse(status_code=400, content={"error": "invalid bucket"})
     safe = _safe_name(name)
     if not safe or not safe.endswith(".md"):
         return JSONResponse(status_code=400, content={"error": "invalid name"})
-    base = get_user_data_dir()
+    try:
+        base, _ = get_request_data_dir(request, username, allow_admin_override=True)
+    except (PermissionError, ValueError) as e:
+        return JSONResponse(status_code=403 if isinstance(e, PermissionError) else 400, content={"error": str(e)})
     path = os.path.join(base, "sche_tasks", bucket, safe)
     if not os.path.exists(path):
         return JSONResponse(status_code=404, content={"error": "not found"})
@@ -1555,7 +2487,10 @@ async def write_schedule(request: Request):
         return JSONResponse(status_code=400, content={"error": "invalid name"})
     if not isinstance(content, str):
         return JSONResponse(status_code=400, content={"error": "content must be string"})
-    base = get_user_data_dir()
+    try:
+        base, _ = get_request_data_dir(request, data.get("username"), allow_admin_override=True)
+    except (PermissionError, ValueError) as e:
+        return JSONResponse(status_code=403 if isinstance(e, PermissionError) else 400, content={"error": str(e)})
     path = os.path.join(base, "sche_tasks", bucket, safe)
     _write_text(path, content)
     return {"status": "saved"}
@@ -1570,7 +2505,10 @@ async def delete_schedule(request: Request):
     safe = _safe_name(name)
     if not safe or not safe.endswith(".md"):
         return JSONResponse(status_code=400, content={"error": "invalid name"})
-    base = get_user_data_dir()
+    try:
+        base, _ = get_request_data_dir(request, data.get("username"), allow_admin_override=True)
+    except (PermissionError, ValueError) as e:
+        return JSONResponse(status_code=403 if isinstance(e, PermissionError) else 400, content={"error": str(e)})
     path = os.path.join(base, "sche_tasks", bucket, safe)
     try:
         os.remove(path)
@@ -1582,6 +2520,43 @@ async def delete_schedule(request: Request):
 
 frontend_dir = resolve_frontend_dir()
 if should_serve_frontend() and frontend_dir:
+    @app.get("/admin")
+    def admin_page():
+        return RedirectResponse(url="/admin/accounts", status_code=307)
+
+    @app.get("/admin/")
+    def admin_page_slash():
+        return RedirectResponse(url="/admin/accounts", status_code=307)
+
+    @app.get("/admin/accounts")
+    def admin_accounts_page():
+        path = os.path.join(frontend_dir, "admin-accounts.html")
+        if not os.path.isfile(path):
+            return JSONResponse(status_code=404, content={"error": "admin accounts frontend not found"})
+        return FileResponse(path)
+
+    @app.get("/admin/accounts/")
+    def admin_accounts_page_slash():
+        path = os.path.join(frontend_dir, "admin-accounts.html")
+        if not os.path.isfile(path):
+            return JSONResponse(status_code=404, content={"error": "admin accounts frontend not found"})
+        return FileResponse(path)
+
+    @app.get("/admin/configs")
+    def admin_configs_page():
+        path = os.path.join(frontend_dir, "admin-configs.html")
+        if not os.path.isfile(path):
+            return JSONResponse(status_code=404, content={"error": "admin configs frontend not found"})
+        return FileResponse(path)
+
+    @app.get("/admin/configs/")
+    def admin_configs_page_slash():
+        path = os.path.join(frontend_dir, "admin-configs.html")
+        if not os.path.isfile(path):
+            return JSONResponse(status_code=404, content={"error": "admin configs frontend not found"})
+        return FileResponse(path)
+
+if should_serve_frontend() and frontend_dir:
     app.mount("/", StaticFiles(directory=frontend_dir, html=True), name="frontend")
     print(f"Frontend serving enabled: {frontend_dir}")
 else:
@@ -1589,4 +2564,4 @@ else:
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=9550)

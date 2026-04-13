@@ -11,7 +11,7 @@ DEFAULT_FRONTEND_DIR = os.path.join(PROJECT_ROOT, "frontend")
 def parse_args():
     parser = argparse.ArgumentParser(description="Run A3Agent in browser/server mode.")
     parser.add_argument("--host", default=os.environ.get("GA_HOST", "0.0.0.0"))
-    parser.add_argument("--port", type=int, default=int(os.environ.get("GA_PORT", "8000")))
+    parser.add_argument("--port", type=int, default=int(os.environ.get("GA_PORT", "9550")))
     parser.add_argument(
         "--workspace",
         default=os.environ.get("GA_WORKSPACE_ROOT", PROJECT_ROOT),

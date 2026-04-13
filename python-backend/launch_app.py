@@ -13,7 +13,7 @@ def start_server():
     # Let's run programmatically to avoid complex process management
     try:
         from api_server import app
-        run(app, host="0.0.0.0", port=8000, log_level="error")
+        run(app, host="0.0.0.0", port=9550, log_level="error")
     except Exception as e:
         print(f"Error starting server: {e}")
 
@@ -23,7 +23,7 @@ server_thread.start()
 print("Waiting for server to start...")
 time.sleep(2) # Wait a bit for server to be ready
 
-URL = "http://localhost:8000"
+URL = "http://localhost:9550"
 
 # 2. Try to launch in "App Mode" (Independent Window)
 

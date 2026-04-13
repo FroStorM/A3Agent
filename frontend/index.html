@@ -962,6 +962,79 @@
         </div>
     </div>
     <div id="app" v-cloak class="flex h-full w-full overflow-hidden">
+        <div v-if="authReady && !currentUser" class="min-h-screen w-full overflow-auto bg-[radial-gradient(circle_at_top,_rgba(37,99,235,0.16),_transparent_36%),linear-gradient(180deg,_#f8fafc_0%,_#eef2ff_100%)] dark:bg-[radial-gradient(circle_at_top,_rgba(96,165,250,0.18),_transparent_36%),linear-gradient(180deg,_#0f172a_0%,_#111827_100%)] flex items-center justify-center p-6">
+            <div class="w-full max-w-5xl grid grid-cols-1 lg:grid-cols-2 rounded-[28px] overflow-hidden border border-white/40 dark:border-slate-700/70 bg-white/80 dark:bg-slate-900/80 backdrop-blur-xl shadow-[0_30px_80px_rgba(15,23,42,0.18)]">
+                <div class="p-8 lg:p-10 bg-gradient-to-br from-blue-600 via-cyan-500 to-emerald-400 text-white">
+                    <div class="flex items-center gap-3 mb-8">
+                        <img src="logo_square.png" class="w-12 h-12 rounded-2xl bg-white/15 p-1.5" alt="Logo">
+                        <div>
+                            <div class="text-sm uppercase tracking-[0.3em] text-white/70">A3Agent</div>
+                            <div class="text-2xl font-bold">开启你的智能之旅</div>
+                        </div>
+                    </div>
+                    <div class="space-y-4">
+                        <h2 class="text-3xl font-semibold leading-tight">自主进化智能体工具GenericAgent</h2>
+                        <p class="text-sm leading-7 text-white/85">自主配置模型、SOP 、ToDo 以及个性化知识库</p>
+                    </div>
+                    <div class="mt-10 grid grid-cols-1 gap-3 text-sm">
+                        <div class="rounded-2xl bg-white/10 border border-white/15 px-4 py-3">自学习、自进化智能体，探索无限可能</div>
+                        <div class="rounded-2xl bg-white/10 border border-white/15 px-4 py-3">极简工程架构，用最少的Token 完成最复杂的任务</div>
+                        <div class="rounded-2xl bg-white/10 border border-white/15 px-4 py-3">极强执行能力，深入系统每个工具进行组合创新</div>
+                    </div>
+                </div>
+                <div class="p-8 lg:p-10 flex items-center">
+                    <div class="w-full max-w-md mx-auto space-y-5">
+                        <div>
+                            <div class="text-sm uppercase tracking-[0.25em] text-slate-400 mb-2">Sign In</div>
+                            <h3 class="text-2xl font-semibold text-slate-900 dark:text-slate-100">登录到 A3Agent</h3>
+                            <p class="mt-2 text-sm text-slate-500 dark:text-slate-400">输入账号密码登录，或先注册新账号后进入你的专属工作区。</p>
+                        </div>
+                        <div class="grid grid-cols-2 rounded-2xl bg-slate-100 dark:bg-slate-800 p-1">
+                            <button @click="authMode = 'login'; authError = ''; authNotice = ''" :class="authMode === 'login' ? 'bg-white dark:bg-slate-700 shadow-sm text-slate-900 dark:text-slate-100' : 'text-slate-500 dark:text-slate-400'" class="rounded-xl px-4 py-2 text-sm font-medium transition">登录</button>
+                            <button @click="authMode = 'register'; authError = ''; authNotice = ''" :class="authMode === 'register' ? 'bg-white dark:bg-slate-700 shadow-sm text-slate-900 dark:text-slate-100' : 'text-slate-500 dark:text-slate-400'" class="rounded-xl px-4 py-2 text-sm font-medium transition">注册</button>
+                        </div>
+                        <div class="space-y-4">
+                            <div v-if="authMode === 'login'">
+                                <label class="block text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-2">用户名</label>
+                                <input v-model="loginUsername" @keydown.enter.prevent="login" class="w-full rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50" placeholder="请输入用户名" />
+                            </div>
+                            <div v-if="authMode === 'login'">
+                                <label class="block text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-2">密码</label>
+                                <input v-model="loginPassword" @keydown.enter.prevent="login" type="password" class="w-full rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50" placeholder="请输入密码" />
+                            </div>
+                            <template v-else>
+                                <div>
+                                    <label class="block text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-2">用户名</label>
+                                    <input v-model="registerUsername" class="w-full rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50" placeholder="请输入用户名" />
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-2">邮箱</label>
+                                    <input v-model="registerEmail" type="email" class="w-full rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50" placeholder="name@example.com" />
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-2">密码</label>
+                                    <input v-model="registerPassword" type="password" class="w-full rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50" placeholder="至少 6 位密码" />
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-2">确认密码</label>
+                                    <input v-model="registerConfirmPassword" @keydown.enter.prevent="register" type="password" class="w-full rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50" placeholder="再次输入密码" />
+                                </div>
+                            </template>
+                        </div>
+                        <div v-if="authNotice" class="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/40 dark:text-emerald-300">{{ authNotice }}</div>
+                        <div v-if="authError" class="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-300">{{ authError }}</div>
+                        <button v-if="authMode === 'login'" @click="login" :disabled="loginBusy" class="w-full rounded-2xl bg-slate-900 text-white dark:bg-blue-600 dark:hover:bg-blue-500 hover:bg-slate-800 px-4 py-3 text-sm font-medium transition disabled:opacity-60 disabled:cursor-not-allowed">
+                            {{ loginBusy ? '登录中...' : '登录' }}
+                        </button>
+                        <button v-else @click="register" :disabled="registerBusy" class="w-full rounded-2xl bg-slate-900 text-white dark:bg-blue-600 dark:hover:bg-blue-500 hover:bg-slate-800 px-4 py-3 text-sm font-medium transition disabled:opacity-60 disabled:cursor-not-allowed">
+                            {{ registerBusy ? '注册中...' : '注册并登录' }}
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <template v-else-if="authReady && currentUser">
         <!-- Sidebar -->
         <aside class="w-64 bg-white dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700 flex flex-col transition-all duration-300 z-20 absolute md:relative h-full shadow-lg md:shadow-none overflow-hidden" 
                :class="{'w-0 opacity-0 border-none': !sidebarOpen, 'w-64 opacity-100': sidebarOpen}">
@@ -1035,6 +1108,14 @@
                             <i data-lucide="clock" class="w-4 h-4"></i>
                             定时触发工具
                         </button>
+                        <a v-if="isAdmin" href="/admin/accounts" class="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-md transition-colors">
+                            <i data-lucide="shield-check" class="w-4 h-4"></i>
+                            用户账户管理
+                        </a>
+                        <a v-if="isAdmin" href="/admin/configs" class="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-md transition-colors">
+                            <i data-lucide="folders" class="w-4 h-4"></i>
+                            用户配置管理
+                        </a>
                         <button @click="reloadAgent" class="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-md transition-colors">
                             <i data-lucide="refresh-cw" class="w-4 h-4"></i>
                             重载配置/模型
@@ -1080,7 +1161,18 @@
                     <i data-lucide="menu" class="w-5 h-5"></i>
                 </button>
                 <div class="font-medium text-gray-700 dark:text-gray-200">对话</div>
-                <div class="w-8"></div> <!-- Spacer for balance -->
+                <div class="flex items-center gap-2">
+                    <div class="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-full bg-gray-100 dark:bg-gray-700 text-xs text-gray-600 dark:text-gray-200">
+                        <span>{{ currentUser.username }}</span>
+                        <span v-if="currentUser.is_admin" class="px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200">Admin</span>
+                    </div>
+                    <button @click="openModal('password')" class="p-2 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300 transition-colors" title="修改密码">
+                        <i data-lucide="key-round" class="w-4 h-4"></i>
+                    </button>
+                    <button @click="logout" class="p-2 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300 transition-colors" title="退出登录">
+                        <i data-lucide="log-out" class="w-4 h-4"></i>
+                    </button>
+                </div>
             </header>
 
             <!-- Chat Area -->
@@ -1173,6 +1265,8 @@
                         <template v-else-if="activeModal === 'sop'">SOP 技能库</template>
                         <template v-else-if="activeModal === 'todo'">ToDo 计划</template>
                         <template v-else-if="activeModal === 'schedule'">定时触发工具</template>
+                        <template v-else-if="activeModal === 'password'">修改密码</template>
+                        <template v-else-if="activeModal === 'admin'">后台管理</template>
                     </div>
                     <button @click="closeModal" class="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-500 dark:text-gray-300">
                         <i data-lucide="x" class="w-5 h-5"></i>
@@ -1338,12 +1432,241 @@
                             </div>
                         </div>
                     </template>
+
+                    <template v-else-if="activeModal === 'password'">
+                        <div class="max-w-xl mx-auto space-y-4">
+                            <div class="rounded-xl border border-gray-200 dark:border-gray-700 p-4 space-y-4">
+                                <div>
+                                    <div class="text-sm font-semibold text-gray-800 dark:text-gray-100">修改当前账号密码</div>
+                                    <div class="text-xs text-gray-500 dark:text-gray-400 mt-1">修改成功后当前登录会保持有效，其他旧会话会自动失效。</div>
+                                </div>
+                                <div class="space-y-3">
+                                    <input v-model="passwordOld" type="password" class="w-full rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-2 text-sm bg-white dark:bg-gray-900" placeholder="当前密码" />
+                                    <input v-model="passwordNew" type="password" class="w-full rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-2 text-sm bg-white dark:bg-gray-900" placeholder="新密码（至少 6 位）" />
+                                    <input v-model="passwordConfirm" type="password" class="w-full rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-2 text-sm bg-white dark:bg-gray-900" placeholder="确认新密码" />
+                                </div>
+                                <div v-if="passwordError" class="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-300">{{ passwordError }}</div>
+                                <div v-if="passwordNotice" class="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/40 dark:text-emerald-300">{{ passwordNotice }}</div>
+                                <div class="flex items-center justify-end gap-2">
+                                    <button @click="closeModal" class="px-3 py-2 text-sm rounded-md bg-gray-200 text-gray-800 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-100">取消</button>
+                                    <button @click="changePassword" :disabled="passwordBusy" class="px-3 py-2 text-sm rounded-md bg-slate-900 text-white hover:bg-slate-800 disabled:opacity-60 disabled:cursor-not-allowed dark:bg-blue-600 dark:hover:bg-blue-500">{{ passwordBusy ? '提交中...' : '确认修改' }}</button>
+                                </div>
+                            </div>
+                        </div>
+                    </template>
+
+                    <template v-else-if="activeModal === 'admin'">
+                        <div class="space-y-4">
+                            <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                                <div class="border border-gray-200 dark:border-gray-700 rounded-xl p-4 space-y-3">
+                                    <div class="flex items-center justify-between">
+                                        <div>
+                                            <div class="text-sm font-semibold text-gray-800 dark:text-gray-100">用户管理</div>
+                                            <div class="text-xs text-gray-500 dark:text-gray-400">创建用户、筛选列表并切换查看对象</div>
+                                        </div>
+                                        <button @click="fetchAdminUsers" class="text-xs px-2 py-1 rounded bg-gray-200 text-gray-800 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-100">刷新</button>
+                                    </div>
+                                    <div class="grid grid-cols-1 gap-2">
+                                        <input v-model="adminUserSearch" @input="fetchAdminUsers" class="w-full rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-2 text-sm bg-white dark:bg-gray-900" placeholder="搜索用户名" />
+                                        <div class="grid grid-cols-2 gap-2">
+                                            <select v-model="adminRoleFilter" @change="fetchAdminUsers" class="w-full rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-2 text-sm bg-white dark:bg-gray-900">
+                                                <option value="all">全部角色</option>
+                                                <option value="admin">仅管理员</option>
+                                                <option value="member">仅普通用户</option>
+                                            </select>
+                                            <select v-model="adminStatusFilter" @change="fetchAdminUsers" class="w-full rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-2 text-sm bg-white dark:bg-gray-900">
+                                                <option value="all">全部状态</option>
+                                                <option value="active">仅启用</option>
+                                                <option value="disabled">仅禁用</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div class="space-y-2">
+                                        <input v-model="createUsername" class="w-full rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-2 text-sm bg-white dark:bg-gray-900" placeholder="新用户名" />
+                                        <input v-model="createPassword" type="password" class="w-full rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-2 text-sm bg-white dark:bg-gray-900" placeholder="初始密码（至少 6 位）" />
+                                        <label class="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300">
+                                            <input v-model="createIsAdmin" type="checkbox" />
+                                            创建为管理员
+                                        </label>
+                                        <button @click="createAdminUser" class="w-full rounded-lg bg-gray-200 text-gray-800 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-100 px-3 py-2 text-sm">创建用户</button>
+                                    </div>
+                                    <div v-if="selectedAdminUser" class="rounded-xl border border-gray-200 dark:border-gray-700 p-3 space-y-3 bg-gray-50/70 dark:bg-gray-900/40">
+                                        <div class="flex items-center justify-between gap-2">
+                                            <div>
+                                                <div class="text-sm font-semibold text-gray-800 dark:text-gray-100">{{ selectedAdminUser.username }}</div>
+                                                <div class="text-xs text-gray-500 dark:text-gray-400">账号状态与密码管理</div>
+                                            </div>
+                                            <div class="flex items-center gap-2">
+                                                <span v-if="selectedAdminUser.is_admin" class="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200">Admin</span>
+                                                <span :class="selectedAdminUser.is_active ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-200' : 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-200'" class="text-[10px] px-1.5 py-0.5 rounded-full">
+                                                    {{ selectedAdminUser.is_active ? '启用中' : '已禁用' }}
+                                                </span>
+                                            </div>
+                                        </div>
+                                        <input v-model="adminResetPassword" type="password" class="w-full rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-2 text-sm bg-white dark:bg-gray-900" placeholder="为该用户设置新密码（至少 6 位）" />
+                                        <div class="grid grid-cols-1 md:grid-cols-3 gap-2">
+                                            <input v-model="adminLimitParallel" type="number" min="1" class="w-full rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-2 text-sm bg-white dark:bg-gray-900" placeholder="最大并发任务数" />
+                                            <input v-model="adminLimitPrompt" type="number" min="100" class="w-full rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-2 text-sm bg-white dark:bg-gray-900" placeholder="最大提示词字符数" />
+                                            <input v-model="adminLimitUploadMb" type="number" min="1" class="w-full rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-2 text-sm bg-white dark:bg-gray-900" placeholder="最大上传大小(MB)" />
+                                        </div>
+                                        <button @click="saveAdminLimits" :disabled="adminBusy" class="w-full rounded-lg bg-slate-900 text-white hover:bg-slate-800 disabled:opacity-60 disabled:cursor-not-allowed dark:bg-blue-600 dark:hover:bg-blue-500 px-3 py-2 text-sm">保存用户配额</button>
+                                        <div class="grid grid-cols-2 gap-2">
+                                            <button @click="adminResetUserPassword" :disabled="adminBusy" class="rounded-lg bg-gray-200 text-gray-800 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-100 px-3 py-2 text-sm disabled:opacity-60 disabled:cursor-not-allowed">重置密码</button>
+                                            <button @click="adminToggleUserStatus(!selectedAdminUser.is_active)" :disabled="adminBusy" :class="selectedAdminUser.is_active ? 'bg-red-600 hover:bg-red-700 text-white' : 'bg-emerald-600 hover:bg-emerald-700 text-white'" class="rounded-lg px-3 py-2 text-sm disabled:opacity-60 disabled:cursor-not-allowed">
+                                                {{ selectedAdminUser.is_active ? '禁用账号' : '启用账号' }}
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div class="flex items-center justify-between text-xs text-gray-500 dark:text-gray-400">
+                                        <span>共 {{ adminUsers.length }} 个匹配用户</span>
+                                        <button @click="toggleAllFilteredTargets" class="px-2 py-1 rounded bg-gray-200 text-gray-800 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-100">
+                                            {{ allFilteredTargetsSelected ? '取消全选分发对象' : '全选当前筛选结果' }}
+                                        </button>
+                                    </div>
+                                    <div class="space-y-1 max-h-64 overflow-auto border border-gray-200 dark:border-gray-700 rounded-lg">
+                                        <button v-for="user in filteredAdminUsers" :key="user.id" @click="chooseAdminUser(user.username)" class="w-full flex items-center justify-between px-3 py-2 text-sm text-left hover:bg-gray-100 dark:hover:bg-gray-700" :class="selectedAdminUsername === user.username ? 'bg-blue-50 dark:bg-blue-900/20' : ''">
+                                            <div class="min-w-0">
+                                                <div class="truncate">{{ user.username }}</div>
+                                                <div class="text-[10px] text-gray-400">{{ user.is_active ? '启用中' : '已禁用' }}</div>
+                                            </div>
+                                            <div class="flex items-center gap-1 shrink-0">
+                                                <label class="flex items-center gap-1 text-[10px] text-gray-500 dark:text-gray-300" @click.stop>
+                                                    <input type="checkbox" :checked="adminSelectedTargets.includes(user.username)" :disabled="user.username === selectedAdminUsername" @change="toggleAdminTarget(user.username)" />
+                                                    分发
+                                                </label>
+                                                <span v-if="user.is_admin" class="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200">Admin</span>
+                                                <span :class="user.is_active ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-200' : 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-200'" class="text-[10px] px-1.5 py-0.5 rounded-full">
+                                                    {{ user.is_active ? 'On' : 'Off' }}
+                                                </span>
+                                            </div>
+                                        </button>
+                                        <div v-if="!filteredAdminUsers.length" class="px-3 py-8 text-sm text-gray-400 text-center">没有符合筛选条件的用户</div>
+                                    </div>
+                                </div>
+
+                                <div class="border border-gray-200 dark:border-gray-700 rounded-xl p-4 space-y-3">
+                                    <div class="flex items-center justify-between gap-2">
+                                        <div>
+                                            <div class="text-sm font-semibold text-gray-800 dark:text-gray-100">文件浏览</div>
+                                            <div class="text-xs text-gray-500 dark:text-gray-400">管理员可读取全部用户文件</div>
+                                        </div>
+                                        <select v-model="adminScope" @change="fetchAdminFiles" class="rounded-lg border border-gray-200 dark:border-gray-700 px-2 py-1 text-sm bg-white dark:bg-gray-900">
+                                            <option value="memory">memory</option>
+                                            <option value="schedule">schedule</option>
+                                            <option value="config">config</option>
+                                        </select>
+                                    </div>
+                                    <div class="text-xs text-gray-500 dark:text-gray-400">当前用户：{{ selectedAdminUsername || '未选择' }}</div>
+                                    <div class="space-y-1 max-h-[52vh] overflow-auto border border-gray-200 dark:border-gray-700 rounded-lg">
+                                        <button v-for="item in adminFiles" :key="item.kind + ':' + item.path" @click="item.kind === 'file' ? selectAdminFile(item.path) : null" class="w-full flex items-center gap-2 px-3 py-2 text-sm text-left hover:bg-gray-100 dark:hover:bg-gray-700" :class="selectedAdminFilePath === item.path ? 'bg-blue-50 dark:bg-blue-900/20' : ''">
+                                            <i :data-lucide="item.kind === 'dir' ? 'folder' : 'file-text'" class="w-4 h-4 shrink-0"></i>
+                                            <span class="truncate">{{ item.path }}</span>
+                                        </button>
+                                        <div v-if="!adminFiles.length" class="px-3 py-8 text-sm text-gray-400 text-center">暂无可浏览文件</div>
+                                    </div>
+                                </div>
+
+                                <div class="border border-gray-200 dark:border-gray-700 rounded-xl p-4 space-y-3">
+                                    <div>
+                                        <div class="text-sm font-semibold text-gray-800 dark:text-gray-100">内容与复制</div>
+                                        <div class="text-xs text-gray-500 dark:text-gray-400">支持单个复制和批量分发</div>
+                                    </div>
+                                    <div class="text-xs text-gray-500 dark:text-gray-400 break-all">{{ selectedAdminFilePath || '尚未选择文件' }}</div>
+                                    <textarea v-if="adminFileEditMode" v-model="adminFileDraft" class="w-full h-[36vh] rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-2 text-sm font-mono bg-gray-50 dark:bg-gray-900"></textarea>
+                                    <textarea v-else :value="adminFileContent" readonly class="w-full h-[36vh] rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-2 text-sm font-mono bg-gray-50 dark:bg-gray-900"></textarea>
+                                    <div class="flex items-center justify-end gap-2">
+                                        <button v-if="selectedAdminFilePath && !adminFileEditMode" @click="startEditAdminFile" class="px-3 py-2 text-sm rounded-md bg-gray-200 text-gray-800 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-100">编辑文件</button>
+                                        <button v-if="selectedAdminFilePath && adminFileEditMode" @click="saveAdminFile" class="px-3 py-2 text-sm rounded-md bg-slate-900 text-white hover:bg-slate-800 dark:bg-blue-600 dark:hover:bg-blue-500">保存文件</button>
+                                        <button v-if="selectedAdminFilePath && adminFileEditMode" @click="cancelEditAdminFile" class="px-3 py-2 text-sm rounded-md bg-gray-200 text-gray-800 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-100">取消编辑</button>
+                                    </div>
+                                    <div class="rounded-xl border border-dashed border-gray-300 dark:border-gray-700 p-3 space-y-2">
+                                        <div class="text-xs font-semibold text-gray-500 dark:text-gray-400">新建路径</div>
+                                        <div class="grid grid-cols-[120px_1fr] gap-2">
+                                            <select v-model="adminCreateKind" class="rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-2 text-sm bg-white dark:bg-gray-900">
+                                                <option value="file">空文件</option>
+                                                <option value="dir">文件夹</option>
+                                            </select>
+                                            <input v-model="adminCreatePath" class="rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-2 text-sm bg-white dark:bg-gray-900" placeholder="例如 demo/test.txt 或 folder/subfolder" />
+                                        </div>
+                                        <button @click="createAdminPath" class="w-full rounded-lg bg-gray-200 text-gray-800 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-100 px-3 py-2 text-sm">创建</button>
+                                    </div>
+                                    <div class="rounded-xl border border-dashed border-gray-300 dark:border-gray-700 p-3 space-y-2">
+                                        <div class="text-xs font-semibold text-gray-500 dark:text-gray-400">重命名或删除当前路径</div>
+                                        <input v-model="adminRenamePath" class="w-full rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-2 text-sm bg-white dark:bg-gray-900" placeholder="当前选中路径的新名称" />
+                                        <div class="grid grid-cols-2 gap-2">
+                                            <button @click="renameAdminPath" :disabled="!selectedAdminFilePath" class="rounded-lg bg-gray-200 text-gray-800 hover:bg-gray-300 disabled:opacity-60 disabled:cursor-not-allowed dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-100 px-3 py-2 text-sm">重命名</button>
+                                            <button @click="deleteAdminPath" :disabled="!selectedAdminFilePath" class="rounded-lg bg-red-600 text-white hover:bg-red-700 disabled:opacity-60 disabled:cursor-not-allowed px-3 py-2 text-sm">删除</button>
+                                        </div>
+                                    </div>
+                                    <div class="space-y-2">
+                                        <div class="text-xs font-semibold text-gray-500 dark:text-gray-400">单个复制</div>
+                                        <select v-model="copyTargetUsername" class="w-full rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-2 text-sm bg-white dark:bg-gray-900">
+                                            <option value="">选择目标用户</option>
+                                            <option v-for="user in adminUsers" :key="'copy-' + user.id" :value="user.username">{{ user.username }}</option>
+                                        </select>
+                                        <input v-model="copyTargetPath" class="w-full rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-2 text-sm bg-white dark:bg-gray-900" placeholder="目标路径，默认与源文件相同" />
+                                        <button @click="copyAdminFile" class="w-full rounded-lg bg-gray-200 text-gray-800 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-100 px-3 py-2 text-sm">复制给目标用户</button>
+                                    </div>
+                                    <div class="rounded-xl border border-dashed border-gray-300 dark:border-gray-700 p-3 space-y-2">
+                                        <div class="flex items-center justify-between gap-2">
+                                            <div>
+                                                <div class="text-xs font-semibold text-gray-500 dark:text-gray-400">批量分发</div>
+                                                <div class="text-[11px] text-gray-400">将当前文件一次复制给左侧已勾选的用户</div>
+                                            </div>
+                                            <div class="text-xs text-gray-500 dark:text-gray-400">已选 {{ adminSelectedTargets.length }} 人</div>
+                                        </div>
+                                        <input v-model="batchCopyPath" class="w-full rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-2 text-sm bg-white dark:bg-gray-900" placeholder="批量目标路径，默认与源文件相同" />
+                                        <button @click="batchCopyAdminFile" :disabled="!adminSelectedTargets.length" class="w-full rounded-lg bg-slate-900 text-white hover:bg-slate-800 disabled:opacity-60 disabled:cursor-not-allowed dark:bg-blue-600 dark:hover:bg-blue-500 px-3 py-2 text-sm">批量分发当前文件</button>
+                                    </div>
+                                    <div class="rounded-xl border border-dashed border-gray-300 dark:border-gray-700 p-3 space-y-2">
+                                        <div>
+                                            <div class="text-xs font-semibold text-gray-500 dark:text-gray-400">上传并落库</div>
+                                            <div class="text-[11px] text-gray-400">先把本地文件上传到当前用户目录，再继续复制或批量分发</div>
+                                        </div>
+                                        <input v-model="adminUploadPath" class="w-full rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-2 text-sm bg-white dark:bg-gray-900" placeholder="上传目标路径，默认文件名" />
+                                        <label class="w-full flex items-center justify-center rounded-lg bg-gray-200 text-gray-800 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-100 px-3 py-2 text-sm cursor-pointer">
+                                            <input type="file" class="hidden" @change="uploadAdminFile" />
+                                            {{ adminUploadFileName ? ('重新上传 ' + adminUploadFileName) : '选择文件并上传' }}
+                                        </label>
+                                    </div>
+                                    <div v-if="adminNotice" class="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/40 dark:text-emerald-300">{{ adminNotice }}</div>
+                                    <div v-if="adminError" class="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-300">{{ adminError }}</div>
+                                </div>
+                            </div>
+                            <div class="border border-gray-200 dark:border-gray-700 rounded-xl p-4 space-y-3">
+                                <div class="flex items-center justify-between gap-2">
+                                    <div>
+                                        <div class="text-sm font-semibold text-gray-800 dark:text-gray-100">审计日志</div>
+                                        <div class="text-xs text-gray-500 dark:text-gray-400">查看管理员关键操作记录</div>
+                                    </div>
+                                    <button @click="fetchAuditLogs" class="text-xs px-2 py-1 rounded bg-gray-200 text-gray-800 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-100">刷新</button>
+                                </div>
+                                <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
+                                    <input v-model="auditTargetFilter" class="w-full rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-2 text-sm bg-white dark:bg-gray-900" placeholder="按目标用户筛选" />
+                                    <input v-model="auditActionFilter" class="w-full rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-2 text-sm bg-white dark:bg-gray-900" placeholder="按动作筛选，例如 admin_copy_file" />
+                                </div>
+                                <button @click="fetchAuditLogs" class="w-full rounded-lg bg-gray-200 text-gray-800 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-100 px-3 py-2 text-sm">应用日志筛选</button>
+                                <div class="max-h-64 overflow-auto rounded-lg border border-gray-200 dark:border-gray-700 divide-y divide-gray-200 dark:divide-gray-700">
+                                    <div v-for="log in auditLogs" :key="log.id" class="px-3 py-3 space-y-1">
+                                        <div class="flex items-center justify-between gap-3 text-xs">
+                                            <span class="font-semibold text-gray-700 dark:text-gray-200">{{ log.action }}</span>
+                                            <span class="text-gray-400">{{ formatAuditTime(log.created_at) }}</span>
+                                        </div>
+                                        <div class="text-xs text-gray-500 dark:text-gray-400">操作者：{{ log.actor_username }}<span v-if="log.target_username"> · 目标：{{ log.target_username }}</span></div>
+                                        <div v-if="log.detail" class="text-xs font-mono text-gray-500 dark:text-gray-400 break-all">{{ log.detail }}</div>
+                                    </div>
+                                    <div v-if="!auditLogs.length" class="px-3 py-8 text-sm text-gray-400 text-center">暂无审计日志</div>
+                                </div>
+                            </div>
+                        </div>
+                    </template>
                 </div>
             </div>
         </div>
         
         <!-- Overlay for mobile sidebar -->
         <div v-if="sidebarOpen" @click="sidebarOpen = false" class="md:hidden fixed inset-0 bg-black/50 z-10"></div>
+        </template>
     </div>
 
     <!-- Marked.js for Markdown rendering -->

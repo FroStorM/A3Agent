@@ -2,10 +2,11 @@ import os, json, re, time, requests, sys, threading, urllib3, base64, mimetypes
 from datetime import datetime
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 from path_utils import resolve_mykey_path
+from runtime_context import get_runtime_value
 
 
 def _get_model_log_dir():
-    log_dir = os.environ.get("GA_USER_DATA_DIR")
+    log_dir = get_runtime_value("user_data_dir") or os.environ.get("GA_USER_DATA_DIR")
     if not log_dir:
         log_dir = os.environ.get("GA_BASE_DIR") or os.path.dirname(os.path.abspath(__file__))
     log_dir = os.path.join(log_dir, "temp")
@@ -36,7 +37,7 @@ def _default_app_root_dir():
     return root
 
 def _default_workspace_dir():
-    root = os.environ.get("GA_WORKSPACE_ROOT")
+    root = get_runtime_value("workspace_root") or os.environ.get("GA_WORKSPACE_ROOT")
     if isinstance(root, str) and root:
         os.makedirs(root, exist_ok=True)
         return root
@@ -93,8 +94,9 @@ def _load_mykeys():
             return None
 
     # 优先使用环境变量中的配置目录
-    env_user_data_dir = os.environ.get("GA_USER_DATA_DIR")
-    print(f"[mykeys DEBUG] GA_USER_DATA_DIR={env_user_data_dir}, GA_WORKSPACE_ROOT={os.environ.get('GA_WORKSPACE_ROOT', 'NOT SET')}")
+    env_user_data_dir = get_runtime_value("user_data_dir") or os.environ.get("GA_USER_DATA_DIR")
+    runtime_workspace_root = get_runtime_value("workspace_root") or os.environ.get("GA_WORKSPACE_ROOT", "NOT SET")
+    print(f"[mykeys DEBUG] GA_USER_DATA_DIR={env_user_data_dir}, GA_WORKSPACE_ROOT={runtime_workspace_root}")
 
     is_frozen = getattr(sys, 'frozen', False)
     exe_dir = os.path.dirname(os.path.abspath(sys.executable)) if is_frozen else None
@@ -122,7 +124,7 @@ def _load_mykeys():
             print(f"[mykeys DEBUG] Set GA_USER_DATA_DIR={base}, GA_WORKSPACE_ROOT={os.environ['GA_WORKSPACE_ROOT']}")
         else:
             # 最后使用默认路径
-            root = _normalize_workspace_root(os.environ.get("GA_WORKSPACE_ROOT"))
+            root = _normalize_workspace_root(get_runtime_value("workspace_root") or os.environ.get("GA_WORKSPACE_ROOT"))
             print(f"[mykeys DEBUG] _normalize_workspace_root={root}")
             if not (isinstance(root, str) and root):
                 root = _default_workspace_dir()

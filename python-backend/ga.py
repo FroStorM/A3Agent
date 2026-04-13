@@ -3,6 +3,7 @@ from datetime import datetime
 from pathlib import Path
 import tempfile, traceback, subprocess, itertools, collections
 from path_utils import temp_dir
+from runtime_context import get_runtime_value
 if sys.stdout is None: sys.stdout = open(os.devnull, "w")
 if sys.stderr is None: sys.stderr = open(os.devnull, "w")
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -17,7 +18,8 @@ if isinstance(_resource_dir, str) and _resource_dir.startswith("\\\\?\\"):
 # 当以 PyInstaller onefile 打包时，assets/ 在 _MEIPASS 临时目录中而非 exe 所在目录
 if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
     _resource_dir = sys._MEIPASS
-_data_dir = os.environ.get("GA_USER_DATA_DIR") or _resource_dir
+def _get_data_dir():
+    return get_runtime_value("user_data_dir") or os.environ.get("GA_USER_DATA_DIR") or _resource_dir
 
 
 def _asset_path(*parts):
@@ -28,7 +30,7 @@ def _asset_path(*parts):
             return
         candidates.append(os.path.join(base, 'assets', *parts))
 
-    add(_data_dir)
+    add(_get_data_dir())
     ga_base = os.environ.get("GA_BASE_DIR")
     if ga_base:
         add(os.path.join(ga_base, "ga_config"))
@@ -43,7 +45,7 @@ def _asset_path(*parts):
 
 
 def _temp_dir(*parts):
-    return str(temp_dir(*parts, root=_data_dir))
+    return str(temp_dir(*parts, root=_get_data_dir()))
 
 from agent_loop import BaseHandler, StepOutcome, try_call_generator
 
@@ -131,7 +133,9 @@ def ask_user(question: str, candidates: list = None):
     """
     try:
         import api_server
-        api_server.state.set_human_input(question, candidates or [])
+        runtime = api_server.get_current_runtime()
+        if runtime is not None:
+            runtime.set_human_input(question, candidates or [])
     except Exception:
         pass
     return {"status": "INTERRUPT", "intent": "HUMAN_INTERVENTION",
@@ -196,7 +200,7 @@ def format_error(e):
 
 def log_memory_access(path):
     if 'memory' not in path: return
-    stats_file = os.path.join(_data_dir, 'memory/file_access_stats.json')
+    stats_file = os.path.join(_get_data_dir(), 'memory/file_access_stats.json')
     os.makedirs(os.path.dirname(stats_file), exist_ok=True)
     try:
         with open(stats_file, 'r', encoding='utf-8') as f: stats = json.load(f)
@@ -555,7 +559,7 @@ class A3AgentHandler(BaseHandler):
 def get_global_memory():
     prompt = "\n"
     try:
-        with open(os.path.join(_data_dir, 'memory/global_mem_insight.txt'), 'r', encoding='utf-8') as f: insight = f.read()
+        with open(os.path.join(_get_data_dir(), 'memory/global_mem_insight.txt'), 'r', encoding='utf-8') as f: insight = f.read()
         with open(_asset_path('insight_fixed_structure.txt'), 'r', encoding='utf-8') as f: structure = f.read()
         prompt += f"\n[Memory]\n"
         prompt += f'cwd = {os.path.abspath("./temp")} （用./引用）\n'

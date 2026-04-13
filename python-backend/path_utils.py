@@ -1,6 +1,7 @@
 import os
 import sys
 from pathlib import Path
+from runtime_context import get_runtime_value
 
 
 def _bundle_resource_root(value):
@@ -62,7 +63,7 @@ def resource_dir():
 
 
 def data_dir():
-    root = os.environ.get("GA_USER_DATA_DIR")
+    root = get_runtime_value("user_data_dir") or os.environ.get("GA_USER_DATA_DIR")
     if root:
         return Path(root).resolve()
     return resource_dir()
@@ -83,7 +84,7 @@ def app_root_dir(app_name=None):
 
 
 def workspace_root_dir(current_workspace=None):
-    root = current_workspace or os.environ.get("GA_WORKSPACE_ROOT") or os.environ.get("GA_USER_DATA_DIR")
+    root = current_workspace or get_runtime_value("workspace_root") or get_runtime_value("user_data_dir") or os.environ.get("GA_WORKSPACE_ROOT") or os.environ.get("GA_USER_DATA_DIR")
     if not root:
         root = resource_dir()
     root = normalize_workspace_root(root)

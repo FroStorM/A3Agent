@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>A3Agent 后台管理</title>
+    <link rel="stylesheet" href="./vendor/tailwind.css">
+    <script src="./vendor/vue.global.js"></script>
+    <script src="./vendor/lucide.min.js"></script>
+</head>
+<body class="bg-slate-100 text-slate-900 min-h-screen">
+    <div id="admin-app" v-cloak>
+        <div v-if="authReady && !currentUser" class="min-h-screen flex items-center justify-center p-6">
+            <div class="w-full max-w-md rounded-3xl bg-white shadow-xl border border-slate-200 p-8 space-y-4">
+                <div>
+                    <div class="text-sm uppercase tracking-[0.25em] text-slate-400">Admin</div>
+                    <h1 class="text-2xl font-semibold">后台管理登录</h1>
+                </div>
+                <input v-model="loginUsername" @keydown.enter.prevent="login" class="w-full rounded-xl border border-slate-200 px-4 py-3 text-sm" placeholder="管理员用户名" />
+                <input v-model="loginPassword" @keydown.enter.prevent="login" type="password" class="w-full rounded-xl border border-slate-200 px-4 py-3 text-sm" placeholder="密码" />
+                <div v-if="authError" class="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600">{{ authError }}</div>
+                <button @click="login" :disabled="loginBusy" class="w-full rounded-xl bg-slate-900 text-white px-4 py-3 text-sm">{{ loginBusy ? '登录中...' : '登录后台' }}</button>
+            </div>
+        </div>
+
+        <div v-else-if="authReady && currentUser && !isAdmin" class="min-h-screen flex items-center justify-center p-6">
+            <div class="w-full max-w-lg rounded-3xl bg-white shadow-xl border border-slate-200 p-8 space-y-4 text-center">
+                <h1 class="text-2xl font-semibold">无后台权限</h1>
+                <p class="text-sm text-slate-500">当前账号不是管理员，请使用管理员账号登录。</p>
+                <div class="flex justify-center gap-3">
+                    <a href="/" class="rounded-xl bg-slate-200 px-4 py-2 text-sm">返回用户页</a>
+                    <button @click="logout" class="rounded-xl bg-slate-900 text-white px-4 py-2 text-sm">退出登录</button>
+                </div>
+            </div>
+        </div>
+
+        <div v-else-if="authReady && currentUser && isAdmin" class="min-h-screen">
+            <header class="sticky top-0 z-20 border-b border-slate-200 bg-white/90 backdrop-blur">
+                <div class="max-w-[1600px] mx-auto px-6 py-4 flex items-center justify-between">
+                    <div>
+                        <div class="text-sm uppercase tracking-[0.28em] text-slate-400">A3Agent Admin</div>
+                        <h1 class="text-2xl font-semibold">独立后台管理平台</h1>
+                    </div>
+                    <div class="flex items-center gap-3">
+                        <a href="/" class="rounded-xl bg-slate-200 px-4 py-2 text-sm">用户页</a>
+                        <div class="rounded-full bg-slate-100 px-4 py-2 text-sm">{{ currentUser.username }}</div>
+                        <button @click="logout" class="rounded-xl bg-slate-900 text-white px-4 py-2 text-sm">退出</button>
+                    </div>
+                </div>
+            </header>
+
+            <main class="max-w-[1600px] mx-auto p-6 space-y-6">
+                <div v-if="adminNotice" class="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{{ adminNotice }}</div>
+                <div v-if="adminError" class="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600">{{ adminError }}</div>
+
+                <div class="grid grid-cols-1 xl:grid-cols-3 gap-6">
+                    <section class="rounded-2xl bg-white border border-slate-200 p-5 space-y-4">
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <div class="text-lg font-semibold">用户管理</div>
+                                <div class="text-sm text-slate-500">筛选、创建、状态和配额</div>
+                            </div>
+                            <button @click="fetchAdminUsers" class="rounded-lg bg-slate-200 px-3 py-2 text-sm">刷新</button>
+                        </div>
+                        <div class="space-y-2">
+                            <input v-model="adminUserSearch" @input="fetchAdminUsers" class="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" placeholder="搜索用户名" />
+                            <div class="grid grid-cols-2 gap-2">
+                                <select v-model="adminRoleFilter" @change="fetchAdminUsers" class="rounded-lg border border-slate-200 px-3 py-2 text-sm">
+                                    <option value="all">全部角色</option>
+                                    <option value="admin">仅管理员</option>
+                                    <option value="member">仅普通用户</option>
+                                </select>
+                                <select v-model="adminStatusFilter" @change="fetchAdminUsers" class="rounded-lg border border-slate-200 px-3 py-2 text-sm">
+                                    <option value="all">全部状态</option>
+                                    <option value="active">仅启用</option>
+                                    <option value="disabled">仅禁用</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="space-y-2 rounded-xl border border-slate-200 p-3">
+                            <input v-model="createUsername" class="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" placeholder="新用户名" />
+                            <input v-model="createPassword" type="password" class="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" placeholder="初始密码" />
+                            <label class="flex items-center gap-2 text-sm"><input v-model="createIsAdmin" type="checkbox" />创建为管理员</label>
+                            <button @click="createAdminUser" class="w-full rounded-lg bg-slate-900 text-white px-3 py-2 text-sm">创建用户</button>
+                        </div>
+                        <div v-if="selectedAdminUser" class="space-y-2 rounded-xl border border-slate-200 p-3">
+                            <div class="font-medium">{{ selectedAdminUser.username }}</div>
+                            <input v-model="adminResetPassword" type="password" class="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" placeholder="重置密码" />
+                            <div class="grid grid-cols-1 md:grid-cols-3 gap-2">
+                                <input v-model="adminLimitParallel" type="number" min="1" class="rounded-lg border border-slate-200 px-3 py-2 text-sm" placeholder="并发任务数" />
+                                <input v-model="adminLimitPrompt" type="number" min="100" class="rounded-lg border border-slate-200 px-3 py-2 text-sm" placeholder="提示词字符数" />
+                                <input v-model="adminLimitUploadMb" type="number" min="1" class="rounded-lg border border-slate-200 px-3 py-2 text-sm" placeholder="上传大小MB" />
+                            </div>
+                            <div class="grid grid-cols-3 gap-2">
+                                <button @click="adminResetUserPassword" class="rounded-lg bg-slate-200 px-3 py-2 text-sm">重置密码</button>
+                                <button @click="saveAdminLimits" class="rounded-lg bg-slate-900 text-white px-3 py-2 text-sm">保存配额</button>
+                                <button @click="adminToggleUserStatus(!selectedAdminUser.is_active)" class="rounded-lg bg-red-600 text-white px-3 py-2 text-sm">{{ selectedAdminUser.is_active ? '禁用' : '启用' }}</button>
+                            </div>
+                        </div>
+                        <div class="flex items-center justify-between text-xs text-slate-500">
+                            <span>共 {{ adminUsers.length }} 个用户</span>
+                            <button @click="toggleAllFilteredTargets" class="rounded-lg bg-slate-200 px-3 py-2 text-sm text-slate-700">{{ allFilteredTargetsSelected ? '取消全选' : '全选分发对象' }}</button>
+                        </div>
+                        <div class="max-h-[500px] overflow-auto rounded-xl border border-slate-200 divide-y divide-slate-100">
+                            <button v-for="user in filteredAdminUsers" :key="user.id" @click="chooseAdminUser(user.username)" class="w-full flex items-center justify-between px-3 py-3 text-left hover:bg-slate-50" :class="selectedAdminUsername === user.username ? 'bg-blue-50' : ''">
+                                <div>
+                                    <div class="font-medium">{{ user.username }}</div>
+                                    <div class="text-xs text-slate-400">{{ user.is_active ? '启用中' : '已禁用' }}</div>
+                                </div>
+                                <div class="flex items-center gap-2">
+                                    <label class="text-xs text-slate-500 flex items-center gap-1" @click.stop>
+                                        <input type="checkbox" :checked="adminSelectedTargets.includes(user.username)" :disabled="user.username === selectedAdminUsername" @change="toggleAdminTarget(user.username)" />
+                                        分发
+                                    </label>
+                                    <span v-if="user.is_admin" class="rounded-full bg-blue-100 text-blue-700 px-2 py-1 text-[10px]">Admin</span>
+                                </div>
+                            </button>
+                        </div>
+                    </section>
+
+                    <section class="rounded-2xl bg-white border border-slate-200 p-5 space-y-4">
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <div class="text-lg font-semibold">文件浏览</div>
+                                <div class="text-sm text-slate-500">当前用户：{{ selectedAdminUsername || '未选择' }}</div>
+                            </div>
+                            <select v-model="adminScope" @change="fetchAdminFiles" class="rounded-lg border border-slate-200 px-3 py-2 text-sm">
+                                <option value="memory">memory</option>
+                                <option value="schedule">schedule</option>
+                                <option value="config">config</option>
+                            </select>
+                        </div>
+                        <div class="max-h-[760px] overflow-auto rounded-xl border border-slate-200 divide-y divide-slate-100">
+                            <button v-for="item in adminFiles" :key="item.kind + ':' + item.path" @click="item.kind === 'file' ? selectAdminFile(item.path) : null" class="w-full flex items-center gap-2 px-3 py-3 text-left hover:bg-slate-50" :class="selectedAdminFilePath === item.path ? 'bg-blue-50' : ''">
+                                <i :data-lucide="item.kind === 'dir' ? 'folder' : 'file-text'" class="w-4 h-4 shrink-0"></i>
+                                <span class="truncate">{{ item.path }}</span>
+                            </button>
+                        </div>
+                    </section>
+
+                    <section class="rounded-2xl bg-white border border-slate-200 p-5 space-y-4">
+                        <div>
+                            <div class="text-lg font-semibold">文件操作与审计</div>
+                            <div class="text-sm text-slate-500 break-all">{{ selectedAdminFilePath || '尚未选择文件' }}</div>
+                        </div>
+                        <textarea v-if="adminFileEditMode" v-model="adminFileDraft" class="w-full h-64 rounded-xl border border-slate-200 px-3 py-3 text-sm font-mono"></textarea>
+                        <textarea v-else :value="adminFileContent" readonly class="w-full h-64 rounded-xl border border-slate-200 px-3 py-3 text-sm font-mono"></textarea>
+                        <div class="flex gap-2">
+                            <button v-if="selectedAdminFilePath && !adminFileEditMode" @click="startEditAdminFile" class="rounded-lg bg-slate-200 px-3 py-2 text-sm">编辑</button>
+                            <button v-if="selectedAdminFilePath && adminFileEditMode" @click="saveAdminFile" class="rounded-lg bg-slate-900 text-white px-3 py-2 text-sm">保存</button>
+                            <button v-if="selectedAdminFilePath && adminFileEditMode" @click="cancelEditAdminFile" class="rounded-lg bg-slate-200 px-3 py-2 text-sm">取消</button>
+                        </div>
+                        <div class="rounded-xl border border-slate-200 p-3 space-y-2">
+                            <div class="text-sm font-medium">新建</div>
+                            <div class="grid grid-cols-[120px_1fr] gap-2">
+                                <select v-model="adminCreateKind" class="rounded-lg border border-slate-200 px-3 py-2 text-sm">
+                                    <option value="file">空文件</option>
+                                    <option value="dir">文件夹</option>
+                                </select>
+                                <input v-model="adminCreatePath" class="rounded-lg border border-slate-200 px-3 py-2 text-sm" placeholder="demo/test.txt 或 folder/sub" />
+                            </div>
+                            <button @click="createAdminPath" class="w-full rounded-lg bg-slate-200 px-3 py-2 text-sm">创建</button>
+                        </div>
+                        <div class="rounded-xl border border-slate-200 p-3 space-y-2">
+                            <div class="text-sm font-medium">重命名 / 删除</div>
+                            <input v-model="adminRenamePath" class="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" placeholder="新的路径名称" />
+                            <div class="grid grid-cols-2 gap-2">
+                                <button @click="renameAdminPath" :disabled="!selectedAdminFilePath" class="rounded-lg bg-slate-200 px-3 py-2 text-sm disabled:opacity-50">重命名</button>
+                                <button @click="deleteAdminPath" :disabled="!selectedAdminFilePath" class="rounded-lg bg-red-600 text-white px-3 py-2 text-sm disabled:opacity-50">删除</button>
+                            </div>
+                        </div>
+                        <div class="rounded-xl border border-slate-200 p-3 space-y-2">
+                            <div class="text-sm font-medium">复制 / 分发</div>
+                            <select v-model="copyTargetUsername" class="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm">
+                                <option value="">选择目标用户</option>
+                                <option v-for="user in adminUsers" :key="'copy-' + user.id" :value="user.username">{{ user.username }}</option>
+                            </select>
+                            <input v-model="copyTargetPath" class="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" placeholder="单个复制目标路径" />
+                            <button @click="copyAdminFile" class="w-full rounded-lg bg-slate-200 px-3 py-2 text-sm">复制给目标用户</button>
+                            <input v-model="batchCopyPath" class="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" placeholder="批量分发目标路径" />
+                            <button @click="batchCopyAdminFile" :disabled="!adminSelectedTargets.length" class="w-full rounded-lg bg-slate-900 text-white px-3 py-2 text-sm disabled:opacity-50">批量分发</button>
+                        </div>
+                        <div class="rounded-xl border border-slate-200 p-3 space-y-2">
+                            <div class="text-sm font-medium">上传</div>
+                            <input v-model="adminUploadPath" class="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" placeholder="上传目标路径" />
+                            <label class="block w-full rounded-lg bg-slate-200 px-3 py-2 text-sm text-center cursor-pointer">
+                                <input type="file" class="hidden" @change="uploadAdminFile" />
+                                {{ adminUploadFileName ? ('重新上传 ' + adminUploadFileName) : '选择文件并上传' }}
+                            </label>
+                        </div>
+                        <div class="rounded-xl border border-slate-200 p-3 space-y-2">
+                            <div class="flex items-center justify-between">
+                                <div class="text-sm font-medium">审计日志</div>
+                                <button @click="fetchAuditLogs" class="rounded-lg bg-slate-200 px-3 py-2 text-sm">刷新</button>
+                            </div>
+                            <div class="grid grid-cols-2 gap-2">
+                                <input v-model="auditTargetFilter" class="rounded-lg border border-slate-200 px-3 py-2 text-sm" placeholder="目标用户" />
+                                <input v-model="auditActionFilter" class="rounded-lg border border-slate-200 px-3 py-2 text-sm" placeholder="动作名" />
+                            </div>
+                            <button @click="fetchAuditLogs" class="w-full rounded-lg bg-slate-200 px-3 py-2 text-sm">应用筛选</button>
+                            <div class="max-h-72 overflow-auto rounded-lg border border-slate-200 divide-y divide-slate-100">
+                                <div v-for="log in auditLogs" :key="log.id" class="px-3 py-3 space-y-1">
+                                    <div class="flex items-center justify-between text-xs">
+                                        <span class="font-semibold">{{ log.action }}</span>
+                                        <span class="text-slate-400">{{ formatAuditTime(log.created_at) }}</span>
+                                    </div>
+                                    <div class="text-xs text-slate-500">操作者：{{ log.actor_username }}<span v-if="log.target_username"> · 目标：{{ log.target_username }}</span></div>
+                                    <div v-if="log.detail" class="text-xs font-mono text-slate-400 break-all">{{ log.detail }}</div>
+                                </div>
+                            </div>
+                        </div>
+                    </section>
+                </div>
+            </main>
+        </div>
+    </div>
+    <script src="./admin.js?v=1"></script>
+</body>
+</html>

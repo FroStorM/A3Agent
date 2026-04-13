@@ -31,12 +31,12 @@ npm run build:frontend
 npm run start:web
 ```
 
-启动后直接访问 [http://127.0.0.1:8000](http://127.0.0.1:8000)。
+启动后直接访问 [http://127.0.0.1:9550](http://127.0.0.1:9550)。
 
 如果要部署到服务器：
 
 ```bash
-python3 python-backend/web_main.py --host 0.0.0.0 --port 8000
+python3 python-backend/web_main.py --host 0.0.0.0 --port 9550
 ```
 
 可选参数：
@@ -536,7 +536,7 @@ python desktop_app.py
 ### 发送聊天消息
 
 ```bash
-curl -X POST http://localhost:8000/api/chat \
+curl -X POST http://localhost:9550/api/chat \
   -H "Content-Type: application/json" \
   -d '{"prompt": "你好，帮我写一个 Hello World 程序"}'
 ```
@@ -544,7 +544,7 @@ curl -X POST http://localhost:8000/api/chat \
 ### 获取状态
 
 ```bash
-curl http://localhost:8000/api/status
+curl http://localhost:9550/api/status
 ```
 
 ### SSE 流订阅
