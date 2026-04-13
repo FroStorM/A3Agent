@@ -1,0 +1,1394 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>A3Agent</title>
+    <script>
+        // Support both desktop-injected backend port and same-origin browser access.
+        (function() {
+            var _backendPort = null;
+            var _portReady = null;
+            var _portReadyResolve = null;
+
+            function getPortPromise() {
+                if (_backendPort) return Promise.resolve(_backendPort);
+                if (!_portReady) {
+                    _portReady = new Promise(function(resolve) { _portReadyResolve = resolve; });
+                }
+                return _portReady;
+            }
+
+            window.addEventListener('backendReady', function(e) {
+                _backendPort = e.detail;
+                window.__BACKEND_PORT__ = _backendPort;
+                if (_portReadyResolve) { _portReadyResolve(_backendPort); _portReadyResolve = null; }
+            });
+
+            // Also allow direct assignment
+            Object.defineProperty(window, '__BACKEND_PORT__', {
+                get: function() { return _backendPort; },
+                set: function(v) {
+                    _backendPort = v;
+                    if (_portReadyResolve) { _portReadyResolve(v); _portReadyResolve = null; }
+                },
+                configurable: true
+            });
+
+            function hasInjectedBackend() {
+                return !!_backendPort;
+            }
+
+            function buildApiUrl(url, port) {
+                return 'http://127.0.0.1:' + port + url;
+            }
+
+            window.__GA_RESOLVE_API_URL__ = function(url) {
+                if (!(typeof url === 'string' && url.startsWith('/'))) {
+                    return Promise.resolve(url);
+                }
+                if (hasInjectedBackend()) {
+                    return Promise.resolve(buildApiUrl(url, _backendPort));
+                }
+                return Promise.resolve(url);
+            };
+
+            const _origFetch = window.fetch;
+            window.fetch = function(input, init) {
+                var url = typeof input === 'string' ? input : (input instanceof Request ? input.url : null);
+                if (url && url.startsWith('/')) {
+                    if (!hasInjectedBackend()) {
+                        return _origFetch.call(window, input, init);
+                    }
+                    var timeout = new Promise(function(_, reject) {
+                        setTimeout(function() { reject(new Error('Backend port timeout')); }, 15000);
+                    });
+                    return Promise.race([getPortPromise(), timeout]).then(function(port) {
+                        var fullUrl = buildApiUrl(url, port);
+                        if (typeof input === 'string') {
+                            return _origFetch.call(window, fullUrl, init);
+                        } else {
+                            return _origFetch.call(window, new Request(fullUrl, input), init);
+                        }
+                    });
+                }
+                return _origFetch.call(window, input, init);
+            };
+        })();
+    </script>
+    <script>
+        (function () {
+            try {
+                const mode = localStorage.getItem('ga_theme') || 'light';
+                const isDark = mode === 'dark' || (mode === 'system' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+                if (isDark) document.documentElement.classList.add('dark');
+                else document.documentElement.classList.remove('dark');
+                document.documentElement.style.colorScheme = isDark ? 'dark' : 'light';
+            } catch (e) {
+            }
+        })();
+    </script>
+    <link rel="stylesheet" href="./vendor/tailwind.css">
+    <style>
+        :root {
+            --bg-primary: #ffffff;
+            --bg-secondary: #f9fafb;
+            --bg-tertiary: #f3f4f6;
+            --bg-hover: #e5e7eb;
+            --bg-card: #eff6ff;
+            --text-primary: #111827;
+            --text-secondary: #374151;
+            --text-muted: #6b7280;
+            --border-color: #e5e7eb;
+            --border-hover: #d1d5db;
+        }
+        html.dark {
+            --bg-primary: #111827;
+            --bg-secondary: #1f2937;
+            --bg-tertiary: #374151;
+            --bg-hover: #4b5563;
+            --bg-card: rgba(30, 58, 138, 0.2);
+            --text-primary: #f3f4f6;
+            --text-secondary: #e5e7eb;
+            --text-muted: #9ca3af;
+            --border-color: #374151;
+            --border-hover: #4b5563;
+        }
+        html:not(.dark) *:not(i):not([data-lucide]) {
+            transition: background-color 0.15s, color 0.15s, border-color 0.15s;
+        }
+    </style>
+    <script src="./vendor/vue.global.js"></script>
+    <script src="./vendor/lucide.min.js"></script>
+    <style>
+        [v-cloak] { display: none; }
+        .startup-fallback {
+            position: fixed;
+            inset: 0;
+            z-index: 60;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+            background:
+                radial-gradient(circle at top, rgba(59, 130, 246, 0.14), transparent 40%),
+                linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+            color: #0f172a;
+            transition: opacity 180ms ease;
+        }
+        html.dark .startup-fallback {
+            background:
+                radial-gradient(circle at top, rgba(59, 130, 246, 0.18), transparent 40%),
+                linear-gradient(180deg, #0f172a 0%, #111827 100%);
+            color: #e5e7eb;
+        }
+        html.js-ready .startup-fallback {
+            opacity: 0;
+            pointer-events: none;
+        }
+        .startup-card {
+            max-width: 560px;
+            width: 100%;
+            border-radius: 20px;
+            padding: 28px;
+            background: rgba(255, 255, 255, 0.9);
+            border: 1px solid rgba(148, 163, 184, 0.24);
+            box-shadow: 0 20px 60px rgba(15, 23, 42, 0.12);
+            backdrop-filter: blur(10px);
+        }
+        html.dark .startup-card {
+            background: rgba(17, 24, 39, 0.9);
+            border-color: rgba(148, 163, 184, 0.18);
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+        }
+        .startup-title {
+            margin: 0 0 8px;
+            font-size: 24px;
+            line-height: 1.2;
+            font-weight: 700;
+        }
+        .startup-text {
+            margin: 0;
+            font-size: 14px;
+            line-height: 1.6;
+            color: #475569;
+        }
+        html.dark .startup-text {
+            color: #cbd5e1;
+        }
+        .scrollbar-hide::-webkit-scrollbar { display: none; }
+        .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+        *, *::before, *::after { box-sizing: border-box; }
+
+        .ga-modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            z-index: 50;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 16px;
+        }
+        .ga-modal-backdrop {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+        }
+        .ga-modal-panel {
+            position: relative;
+            width: 100%;
+            max-width: 1024px;
+            max-height: 85vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            border-radius: 12px;
+        }
+        .ga-modal-body {
+            flex: 1;
+            overflow: auto;
+        }
+        .ga-todo-textarea {
+            width: 100%;
+            height: 55vh;
+            resize: none;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+            font-size: 14px;
+            line-height: 1.4;
+        }
+
+        select option {
+            background-color: #ffffff;
+            color: #111827;
+        }
+        html.dark select option {
+            background-color: #111827;
+            color: #f3f4f6;
+        }
+        html.dark select,
+        html.dark input,
+        html.dark textarea,
+        html.dark button {
+            color-scheme: dark;
+        }
+        html:not(.dark) select,
+        html:not(.dark) input,
+        html:not(.dark) textarea,
+        html:not(.dark) button {
+            color-scheme: light;
+        }
+        
+        /* Custom Markdown Styles */
+        .prose pre {
+            background-color: #f3f4f6;
+            border-radius: 0.5rem;
+            padding: 1rem;
+            overflow-x: auto;
+        }
+        .dark .prose pre {
+            background-color: #1f2937;
+        }
+        #chat-container .ga-message-card {
+            min-width: 0;
+            overflow: hidden;
+        }
+        #chat-container .ga-message-body {
+            min-width: 0;
+            max-width: 100%;
+            overflow-wrap: anywhere;
+            word-break: break-word;
+        }
+        #chat-container .ga-message-body > :first-child {
+            margin-top: 0;
+        }
+        #chat-container .ga-message-body > :last-child {
+            margin-bottom: 0;
+        }
+        #chat-container .ga-message-body pre {
+            max-width: 100%;
+            white-space: pre-wrap;
+            word-break: break-word;
+            overflow-x: auto;
+            margin: 0.75rem 0;
+        }
+        #chat-container .ga-message-body code {
+            word-break: break-word;
+        }
+        #chat-container .ga-message-body table {
+            display: block;
+            overflow-x: auto;
+            max-width: 100%;
+        }
+        .prose code {
+            color: #ef4444;
+            background-color: #f3f4f6;
+            padding: 0.125rem 0.25rem;
+            border-radius: 0.25rem;
+            font-size: 0.875em;
+        }
+        .dark .prose code {
+            color: #f87171;
+            background-color: #374151;
+        }
+        .prose pre code {
+            color: inherit;
+            background-color: transparent;
+            padding: 0;
+        }
+        .animate-fade-in-up {
+            animation: fadeInUp 0.3s ease-out;
+        }
+        @keyframes fadeInUp {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        html.dark .dark\:bg-gray-900 { background-color: #111827 !important; }
+        html.dark .dark\:bg-gray-800 { background-color: #1f2937 !important; }
+        html.dark .dark\:bg-gray-700 { background-color: #374151 !important; }
+        html.dark .dark\:bg-gray-900\/20 { background-color: rgba(17, 24, 39, 0.2) !important; }
+        html.dark .dark\:bg-blue-900\/20 { background-color: rgba(30, 58, 138, 0.2) !important; }
+        html.dark .dark\:bg-blue-900\/30 { background-color: rgba(30, 58, 138, 0.3) !important; }
+        html.dark .dark\:bg-yellow-900 { background-color: #78350f !important; }
+        html.dark .dark\:bg-purple-900\/20 { background-color: rgba(88, 28, 135, 0.2) !important; }
+        html.dark .dark\:bg-red-900\/20 { background-color: rgba(127, 29, 29, 0.2) !important; }
+
+        html.dark .dark\:border-gray-700 { border-color: #374151 !important; }
+        html.dark .dark\:border-blue-800 { border-color: #1e40af !important; }
+
+        html.dark .dark\:text-gray-100 { color: #f3f4f6 !important; }
+        html.dark .dark\:text-gray-200 { color: #e5e7eb !important; }
+        html.dark .dark\:text-gray-300 { color: #d1d5db !important; }
+        html.dark .dark\:text-gray-400 { color: #9ca3af !important; }
+        html.dark .dark\:text-gray-500 { color: #6b7280 !important; }
+        html.dark .dark\:text-blue-400 { color: #60a5fa !important; }
+        html.dark .dark\:text-blue-300 { color: #93c5fd !important; }
+        html.dark .dark\:text-purple-400 { color: #c084fc !important; }
+        html.dark .dark\:text-red-400 { color: #f87171 !important; }
+        html.dark .dark\:text-yellow-200 { color: #fef08a !important; }
+
+        html.dark .dark\:hover\:bg-gray-700:hover { background-color: #374151 !important; }
+        html.dark .dark\:hover\:bg-gray-600:hover { background-color: #4b5563 !important; }
+        html.dark .dark\:hover\:bg-purple-900\/20:hover { background-color: rgba(88, 28, 135, 0.2) !important; }
+        html.dark .dark\:hover\:bg-red-900\/20:hover { background-color: rgba(127, 29, 29, 0.2) !important; }
+
+        html.dark aside button {
+            background-color: transparent;
+        }
+        html.dark aside button.w-full {
+            background-color: rgba(255, 255, 255, 0.06);
+        }
+        html.dark #themeToggle {
+            background-color: rgba(255, 255, 255, 0.06);
+        }
+        html.dark .ga-modal-panel button.w-full.text-left {
+            background-color: rgba(255, 255, 255, 0.06);
+        }
+
+        /* Apply CSS variables to all key elements - bypasses Tailwind JIT limitations */
+        body {
+            background-color: var(--bg-primary) !important;
+            color: var(--text-primary) !important;
+        }
+        html:not(.dark) body {
+            color-scheme: light;
+        }
+        html.dark body {
+            color-scheme: dark;
+        }
+        #app, #chat-container, .ga-modal-overlay {
+            background-color: var(--bg-primary) !important;
+        }
+        #chat-container .prose,
+        #chat-container .prose pre,
+        #chat-container .prose code,
+        #chat-container .prose p,
+        #chat-container .prose h1,
+        #chat-container .prose h2,
+        #chat-container .prose h3,
+        #chat-container .prose ul,
+        #chat-container .prose ol,
+        #chat-container .prose blockquote {
+            color: var(--text-primary) !important;
+        }
+        #chat-container .prose pre,
+        #chat-container .prose code {
+            background-color: var(--bg-tertiary) !important;
+        }
+        #chat-container .prose a {
+            color: #2563eb !important;
+        }
+        html.dark #chat-container .prose a {
+            color: #60a5fa !important;
+        }
+        html.dark #chat-container .prose pre {
+            background-color: rgba(31, 41, 55, 0.8) !important;
+        }
+        html.dark #chat-container .prose blockquote {
+            border-left-color: #4b5563 !important;
+            color: var(--text-secondary) !important;
+        }
+        html:not(.dark) #chat-container .prose blockquote {
+            border-left-color: #d1d5db !important;
+        }
+
+        /* Sidebar & Status Card */
+        aside,
+        aside .bg-white,
+        html.dark aside .dark\:bg-gray-800 {
+            background-color: var(--bg-secondary) !important;
+        }
+        aside .bg-white {
+            background-color: var(--bg-primary) !important;
+        }
+        aside .border-gray-200,
+        aside .border-gray-700,
+        html.dark aside .dark\:border-gray-700 {
+            border-color: var(--border-color) !important;
+        }
+        aside .text-gray-700,
+        aside .text-gray-500,
+        aside .text-xs,
+        aside button span,
+        html.dark aside .dark\:text-gray-200,
+        html.dark aside .dark\:text-gray-400,
+        html.dark aside .dark\:text-gray-300 {
+            color: var(--text-secondary) !important;
+        }
+        aside .text-blue-600,
+        html.dark aside .dark\:text-blue-400 {
+            color: #2563eb !important;
+        }
+        html.dark aside .dark\:text-blue-400 {
+            color: #60a5fa !important;
+        }
+        aside .hover\:bg-gray-100:hover,
+        html.dark aside .dark\:hover\:bg-gray-700:hover {
+            background-color: var(--bg-hover) !important;
+        }
+        .bg-blue-50 {
+            background-color: var(--bg-card) !important;
+        }
+        .border-blue-100,
+        html.dark .border-blue-800 {
+            border-color: var(--border-color) !important;
+        }
+        html.dark .border-blue-800 {
+            border-color: rgba(30, 58, 138, 0.3) !important;
+        }
+        .text-blue-600,
+        html.dark .dark\:text-blue-400 {
+            color: #2563eb !important;
+        }
+        html.dark .dark\:text-blue-400 {
+            color: #60a5fa !important;
+        }
+        .border-blue-200,
+        html.dark .dark\:border-blue-800 {
+            border-color: var(--border-color) !important;
+        }
+
+        /* Autonomous trigger button */
+        .hover\:bg-purple-50:hover,
+        html.dark .dark\:hover\:bg-purple-900\/20:hover {
+            background-color: var(--bg-hover) !important;
+        }
+
+        /* Message bubbles */
+        .prose.max-w-none.bg-white,
+        html.dark .prose.dark\:bg-gray-800 {
+            background-color: var(--bg-secondary) !important;
+        }
+        .prose.max-w-none.bg-white {
+            background-color: var(--bg-primary) !important;
+        }
+        .prose.max-w-none.bg-white.border-gray-100 {
+            border-color: var(--border-color) !important;
+        }
+
+        /* Typing indicator bubble */
+        .bg-white.dark\:bg-gray-800 {
+            background-color: var(--bg-primary) !important;
+        }
+        .bg-white.dark\:bg-gray-800.border-gray-100 {
+            border-color: var(--border-color) !important;
+        }
+
+        /* Jump to latest button */
+        html.dark .bg-white.dark\:bg-gray-800 {
+            background-color: var(--bg-secondary) !important;
+        }
+        button.bg-white {
+            background-color: var(--bg-primary) !important;
+        }
+        html.dark button.bg-white {
+            background-color: var(--bg-secondary) !important;
+        }
+
+        /* Load more button */
+        button.border-gray-200 {
+            border-color: var(--border-color) !important;
+        }
+        button.bg-white {
+            background-color: var(--bg-primary) !important;
+        }
+
+        /* Input area */
+        .bg-white.dark\:bg-gray-800 {
+            background-color: var(--bg-primary) !important;
+        }
+        .border-gray-200,
+        html.dark .dark\:border-gray-700 {
+            border-color: var(--border-color) !important;
+        }
+        textarea.bg-gray-50,
+        html.dark textarea.dark\:bg-gray-900 {
+            background-color: var(--bg-secondary) !important;
+        }
+
+        /* Modal panels */
+        .bg-white,
+        .ga-modal-panel {
+            background-color: var(--bg-primary) !important;
+        }
+        html.dark .ga-modal-panel {
+            background-color: var(--bg-secondary) !important;
+        }
+        .ga-modal-panel .border-gray-200 {
+            border-color: var(--border-color) !important;
+        }
+        .ga-modal-panel .text-gray-800 {
+            color: var(--text-primary) !important;
+        }
+        html.dark .ga-modal-panel .dark\:text-gray-100 {
+            color: var(--text-primary) !important;
+        }
+
+        /* Model list buttons */
+        .bg-blue-100 {
+            background-color: var(--bg-card) !important;
+        }
+        html.dark .dark\:bg-blue-900\/30 {
+            background-color: rgba(30, 58, 138, 0.3) !important;
+        }
+        .text-blue-700,
+        html.dark .dark\:text-blue-300 {
+            color: #1d4ed8 !important;
+        }
+        html.dark .dark\:text-blue-300 {
+            color: #93c5fd !important;
+        }
+        .text-gray-700 {
+            color: var(--text-primary) !important;
+        }
+
+        /* Text colors */
+        .text-gray-800,
+        html.dark .dark\:text-gray-100 {
+            color: var(--text-primary) !important;
+        }
+        .text-gray-600 {
+            color: var(--text-secondary) !important;
+        }
+        .text-gray-500 {
+            color: var(--text-muted) !important;
+        }
+        .text-gray-400 {
+            color: var(--text-muted) !important;
+        }
+        .text-gray-300 {
+            color: var(--text-muted) !important;
+        }
+        html.dark .dark\:text-gray-200 {
+            color: var(--text-secondary) !important;
+        }
+        html.dark .dark\:text-gray-400 {
+            color: var(--text-muted) !important;
+        }
+
+        /* Autonomous label */
+        .bg-yellow-100 {
+            background-color: #fef9c3 !important;
+        }
+        .text-yellow-800 {
+            color: #854d0e !important;
+        }
+        html.dark .dark\:bg-yellow-900 {
+            background-color: rgba(120, 53, 15, 0.5) !important;
+        }
+        html.dark .dark\:text-yellow-200 {
+            color: #fde047 !important;
+        }
+
+        /* Load more & jump buttons text */
+        button.text-gray-600 {
+            color: var(--text-secondary) !important;
+        }
+        button.text-gray-600:hover {
+            background-color: var(--bg-hover) !important;
+        }
+
+        /* Divider */
+        .bg-gray-200,
+        html.dark .dark\:bg-gray-700 {
+            background-color: var(--border-color) !important;
+        }
+
+        /* User avatar */
+        .bg-blue-100.text-blue-600,
+        html.dark .dark\:bg-blue-900.dark\:text-blue-300 {
+            background-color: var(--bg-card) !important;
+            color: #2563eb !important;
+        }
+        html.dark .dark\:bg-blue-900.dark\:text-blue-300 {
+            background-color: rgba(30, 58, 138, 0.3) !important;
+            color: #93c5fd !important;
+        }
+
+        /* Toggle switch in light mode */
+        html:not(.dark) .bg-gray-300 {
+            background-color: #9ca3af !important;
+        }
+
+        /* Refresh / workspace buttons hover in light mode */
+        .hover\:bg-gray-50:hover {
+            background-color: var(--bg-hover) !important;
+        }
+
+        /* Empty state text */
+        .text-gray-400 {
+            color: var(--text-muted) !important;
+        }
+
+        /* Expand button */
+        .bg-gray-100 {
+            background-color: var(--bg-tertiary) !important;
+        }
+        .bg-gray-100:hover {
+            background-color: var(--bg-hover) !important;
+        }
+
+        /* Copy button in message bubble */
+        .hover\:bg-gray-100:hover,
+        .text-gray-400 {
+            color: var(--text-muted) !important;
+        }
+
+        /* Scrollbar in light mode */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: var(--bg-secondary);
+        }
+        ::-webkit-scrollbar-thumb {
+            background: var(--border-hover);
+            border-radius: 3px;
+        }
+
+        /* Copy button text */
+        button.text-gray-400:hover {
+            color: var(--text-secondary) !important;
+        }
+
+        /* Modal body scroll */
+        .ga-modal-body {
+            background-color: var(--bg-primary) !important;
+        }
+
+        /* Schedule list / todo list items */
+        .border-gray-200 {
+            border-color: var(--border-color) !important;
+        }
+        .bg-white {
+            background-color: var(--bg-primary) !important;
+        }
+        html.dark .bg-white {
+            background-color: var(--bg-secondary) !important;
+        }
+
+        /* Workspace folder items */
+        .hover\:bg-gray-50 {
+            background-color: transparent !important;
+        }
+        .hover\:bg-gray-50:hover {
+            background-color: var(--bg-hover) !important;
+        }
+
+        /* New model button */
+        .bg-blue-600 {
+            background-color: #2563eb !important;
+        }
+        .bg-blue-600:hover {
+            background-color: #1d4ed8 !important;
+        }
+
+        /* Modal panel container */
+        .ga-modal-panel {
+            background-color: var(--bg-primary) !important;
+        }
+        html.dark .ga-modal-panel {
+            background-color: var(--bg-secondary) !important;
+        }
+        .ga-modal-panel * {
+            border-color: var(--border-color) !important;
+        }
+        html.dark .ga-modal-panel * {
+            border-color: var(--border-hover) !important;
+        }
+
+        /* Modal header */
+        .ga-modal-panel .border-b {
+            background-color: var(--bg-secondary) !important;
+        }
+        .ga-modal-panel .font-medium {
+            color: var(--text-primary) !important;
+        }
+
+        /* Modal close button */
+        .ga-modal-panel .hover\:bg-gray-100:hover {
+            background-color: var(--bg-hover) !important;
+        }
+        html.dark .ga-modal-panel .hover\:bg-gray-100:hover {
+            background-color: var(--bg-hover) !important;
+        }
+
+        /* Modal body */
+        .ga-modal-body {
+            background-color: var(--bg-primary) !important;
+        }
+        .ga-modal-body * {
+            color: var(--text-primary) !important;
+        }
+
+        /* Modal form elements - inputs */
+        .ga-modal-panel input[type="text"],
+        .ga-modal-panel input[type="password"],
+        .ga-modal-panel input[type="number"],
+        .ga-modal-panel select,
+        .ga-modal-panel textarea {
+            background-color: var(--bg-secondary) !important;
+            color: var(--text-primary) !important;
+            border-color: var(--border-color) !important;
+        }
+        .ga-modal-panel input[type="text"]:focus,
+        .ga-modal-panel input[type="password"]:focus,
+        .ga-modal-panel input[type="number"]:focus,
+        .ga-modal-panel select:focus,
+        .ga-modal-panel textarea:focus {
+            border-color: var(--border-hover) !important;
+        }
+        html.dark .ga-modal-panel input[type="text"],
+        html.dark .ga-modal-panel input[type="password"],
+        html.dark .ga-modal-panel input[type="number"],
+        html.dark .ga-modal-panel select,
+        html.dark .ga-modal-panel textarea {
+            background-color: var(--bg-tertiary) !important;
+            color: var(--text-primary) !important;
+            border-color: var(--border-hover) !important;
+        }
+
+        /* Modal labels */
+        .ga-modal-panel .text-xs {
+            color: var(--text-muted) !important;
+        }
+
+        /* Modal buttons - unified light gray style */
+        .ga-modal-panel .bg-gray-200,
+        .ga-modal-panel [class*="bg-gray-200"] {
+            background-color: #e5e7eb !important;
+            color: #1f2937 !important;
+        }
+        .ga-modal-panel .hover\:bg-gray-300:hover,
+        .ga-modal-panel [class*="hover\\:bg-gray-300"]:hover {
+            background-color: #d1d5db !important;
+        }
+        html.dark .ga-modal-panel .bg-gray-200,
+        html.dark .ga-modal-panel [class*="bg-gray-200"] {
+            background-color: #374151 !important;
+            color: #e5e7eb !important;
+        }
+        html.dark .ga-modal-panel .hover\:bg-gray-300:hover {
+            background-color: #4b5563 !important;
+        }
+
+        /* Modal - SOP/schedule list panel headers (light: bg-gray-50, dark: bg-gray-900) */
+        .ga-modal-panel .bg-gray-50 {
+            background-color: var(--bg-secondary) !important;
+        }
+        html.dark .ga-modal-panel .dark\:bg-gray-900 {
+            background-color: #111827 !important;
+        }
+        .ga-modal-panel .text-gray-500 {
+            color: var(--text-muted) !important;
+        }
+        html.dark .ga-modal-panel .dark\:text-gray-400 {
+            color: #9ca3af !important;
+        }
+
+        /* Modal - file list hover (hover:bg-gray-100 dark:hover:bg-gray-700) */
+        .ga-modal-panel .hover\:bg-gray-100:hover {
+            background-color: var(--bg-hover) !important;
+        }
+        html.dark .ga-modal-panel .dark\:hover\:bg-gray-700:hover {
+            background-color: #374151 !important;
+        }
+
+        /* Modal - selected item highlight (bg-blue-50 dark:bg-blue-900/20) */
+        .ga-modal-panel .bg-blue-50 {
+            background-color: var(--bg-card) !important;
+        }
+        html.dark .ga-modal-panel .dark\:bg-blue-900\/20 {
+            background-color: rgba(30, 58, 138, 0.3) !important;
+        }
+
+        /* Modal - text colors */
+        .ga-modal-panel .text-gray-700 {
+            color: var(--text-secondary) !important;
+        }
+        .ga-modal-panel .text-gray-800 {
+            color: var(--text-primary) !important;
+        }
+        html.dark .ga-modal-panel .dark\:text-gray-200 {
+            color: #e5e7eb !important;
+        }
+        html.dark .ga-modal-panel .dark\:text-gray-100 {
+            color: #f3f4f6 !important;
+        }
+
+        /* Modal - status text colors */
+        .ga-modal-panel .text-green-700 {
+            color: #15803d !important;
+        }
+        html.dark .ga-modal-panel .dark\:text-green-400 {
+            color: #4ade80 !important;
+        }
+        .ga-modal-panel .text-red-600 {
+            color: #dc2626 !important;
+        }
+        html.dark .ga-modal-panel .dark\:text-red-400 {
+            color: #f87171 !important;
+        }
+
+        /* Modal - toggle switch */
+        .ga-modal-panel .bg-green-500 {
+            background-color: #22c55e !important;
+        }
+        html.dark .ga-modal-panel .dark\:bg-gray-700 {
+            background-color: var(--bg-tertiary) !important;
+        }
+        .ga-modal-panel .bg-gray-300 {
+            background-color: #d1d5db !important;
+        }
+
+        /* Modal - textarea backgrounds */
+        .ga-modal-panel textarea {
+            background-color: var(--bg-secondary) !important;
+        }
+        html.dark .ga-modal-panel .dark\:bg-gray-900 {
+            background-color: #111827 !important;
+        }
+
+        /* Modal - borders */
+        .ga-modal-panel .border {
+            border-color: var(--border-color) !important;
+        }
+        html.dark .ga-modal-panel .dark\:border-gray-700 {
+            border-color: #374151 !important;
+        }
+
+        /* Modal - schedule toggle area */
+        .ga-modal-panel .border-b {
+            border-color: var(--border-color) !important;
+        }
+
+        /* Model list - key button (now unified gray bg) */
+        .ga-modal-panel .bg-gray-200 {
+            background-color: #e5e7eb !important;
+        }
+        .ga-modal-panel .hover\:bg-gray-300:hover {
+            background-color: #d1d5db !important;
+        }
+        .ga-modal-panel .text-gray-700 {
+            color: #374151 !important;
+        }
+        html.dark .ga-modal-panel .dark\:bg-gray-700 {
+            background-color: #374151 !important;
+        }
+        html.dark .ga-modal-panel .dark\:hover\:bg-gray-600:hover {
+            background-color: #4b5563 !important;
+        }
+        html.dark .ga-modal-panel .dark\:text-gray-200 {
+            color: #e5e7eb !important;
+        }
+
+        /* Model list - active model bg (bg-blue-100 dark:bg-blue-900/30) */
+        .ga-modal-panel .bg-blue-100 {
+            background-color: #dbeafe !important;
+        }
+        html.dark .ga-modal-panel .dark\:bg-blue-900\/30 {
+            background-color: rgba(30, 58, 138, 0.4) !important;
+        }
+
+        /* Model list - model text */
+        .ga-modal-panel .text-blue-700 {
+            color: #1d4ed8 !important;
+        }
+        html.dark .ga-modal-panel .dark\:text-blue-300 {
+            color: #93c5fd !important;
+        }
+
+        /* Modal - blue outline buttons */
+        .ga-modal-panel .border-blue-800 {
+            border-color: #1e40af !important;
+        }
+
+        /* Modal - key editor section */
+        .ga-modal-panel #ga-key-editor {
+            background-color: var(--bg-secondary) !important;
+            border-color: var(--border-color) !important;
+        }
+        html.dark .ga-modal-panel #ga-key-editor {
+            background-color: var(--bg-tertiary) !important;
+            border-color: var(--border-hover) !important;
+        }
+
+        /* Sidebar threshold select */
+        .antialiased .border {
+            border-color: var(--border-color) !important;
+        }
+        .antialiased input,
+        .antialiased select,
+        .antialiased textarea {
+            background-color: var(--bg-secondary) !important;
+            color: var(--text-primary) !important;
+        }
+
+        /* Sidebar links hover in light mode */
+        html:not(.dark) .hover\:bg-gray-100:hover {
+            background-color: var(--bg-hover) !important;
+        }
+        /* Sidebar links active text */
+        html:not(.dark) .text-gray-700 {
+            color: var(--text-secondary) !important;
+        }
+
+        /* Autonomous label in dark mode */
+        html.dark .dark\:bg-yellow-900 {
+            background-color: rgba(113, 63, 18, 0.5) !important;
+        }
+        html.dark .dark\:text-yellow-200 {
+            color: #fde047 !important;
+        }
+
+        /* Sidebar status indicator text */
+        html:not(.dark) .text-blue-600 {
+            color: #2563eb !important;
+        }
+    </style>
+</head>
+<body class="bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-100 font-sans antialiased h-screen overflow-hidden">
+    <div id="startup-fallback" class="startup-fallback">
+        <div class="startup-card">
+            <h1 class="startup-title">A3Agent 正在启动</h1>
+            <p class="startup-text">如果界面长时间停留在这里，通常是前端资源没有加载成功。现在已经改成只使用本地资源，正常情况下几秒内就会进入主界面。</p>
+        </div>
+    </div>
+    <div id="app" v-cloak class="flex h-full w-full overflow-hidden">
+        <!-- Sidebar -->
+        <aside class="w-64 bg-white dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700 flex flex-col transition-all duration-300 z-20 absolute md:relative h-full shadow-lg md:shadow-none overflow-hidden" 
+               :class="{'w-0 opacity-0 border-none': !sidebarOpen, 'w-64 opacity-100': sidebarOpen}">
+            <div class="p-4 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between h-14">
+                <div class="flex items-center gap-2 min-w-0">
+                    <img src="logo_square.png" class="w-8 h-8 rounded-md" alt="Logo">
+                    <h1 class="min-w-0 text-xl font-bold bg-gradient-to-r from-blue-500 to-purple-600 bg-clip-text text-transparent truncate">A3Agent</h1>
+                </div>
+                <button id="themeToggle" type="button" @click="toggleTheme" class="shrink-0 p-1.5 rounded-md border border-gray-200 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-200" title="主题：浅色（点击切换）"></button>
+                <button @click="sidebarOpen = false" class="md:hidden text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200">
+                    <i data-lucide="x" class="w-5 h-5"></i>
+                </button>
+            </div>
+            
+            <div class="flex-1 overflow-y-auto p-4 space-y-4">
+                <!-- Status Card -->
+                <div class="bg-blue-50 dark:bg-blue-900/20 rounded-lg p-3 border border-blue-100 dark:border-blue-800 space-y-2">
+                    <div>
+                        <div class="text-xs text-blue-600 dark:text-blue-400 font-semibold mb-1">当前模型</div>
+                        <div class="text-sm font-medium truncate" :title="status.llm_name">{{ status.llm_name || 'NULL LLM' }}</div>
+                        <div class="mt-2 flex items-center gap-2">
+                            <span class="w-2 h-2 rounded-full transition-colors duration-300" :class="status.is_running ? 'bg-green-500 animate-pulse' : 'bg-gray-400'"></span>
+                            <span class="text-xs text-gray-500 dark:text-gray-400">{{ status.is_running ? '运行中' : '空闲' }}</span>
+                        </div>
+                    </div>
+                    
+                    <div class="pt-2 border-t border-blue-200 dark:border-blue-800 space-y-2">
+                         <div class="flex items-center justify-between">
+                            <span class="text-xs text-gray-500 dark:text-gray-400">自主行动</span>
+                            <button @click="toggleAutonomous" 
+                                class="relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+                                :class="status.autonomous_enabled ? 'bg-green-500' : 'bg-gray-300'">
+                                <span class="inline-block h-3 w-3 transform rounded-full bg-white transition duration-200 ease-in-out"
+                                    :class="status.autonomous_enabled ? 'translate-x-5' : 'translate-x-1'"></span>
+                            </button>
+                        </div>
+                        <div v-if="status.autonomous_enabled" class="space-y-1">
+                             <div class="flex items-center justify-between text-xs text-gray-400">
+                                <span>触发阈值:</span>
+                                <select @change="updateThreshold" v-model="status.autonomous_threshold" class="bg-transparent border border-gray-300 dark:border-gray-700 rounded px-1 py-0.5 text-xs focus:outline-none">
+                                    <option :value="60">1分钟</option>
+                                    <option :value="300">5分钟</option>
+                                    <option :value="1800">30分钟</option>
+                                    <option :value="3600">1小时</option>
+                                </select>
+                             </div>
+                            <div class="text-xs text-gray-400">
+                               空闲: {{ formatTime(status.idle_time) }}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Actions -->
+                <div class="space-y-2">
+                    <div class="space-y-1">
+                        <div class="text-xs font-semibold text-gray-500 dark:text-gray-400 px-2 uppercase tracking-wider mb-2">配置</div>
+                        <button @click="openModal('model')" class="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-md transition-colors">
+                            <i data-lucide="cpu" class="w-4 h-4"></i>
+                            模型切换
+                        </button>
+                        <button @click="openModal('sop')" class="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-md transition-colors">
+                            <i data-lucide="book-open" class="w-4 h-4"></i>
+                            SOP 技能库
+                        </button>
+                        <button @click="openModal('todo')" class="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-md transition-colors">
+                            <i data-lucide="check-square" class="w-4 h-4"></i>
+                            ToDo 计划
+                        </button>
+                        <button @click="openModal('schedule')" class="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-md transition-colors">
+                            <i data-lucide="clock" class="w-4 h-4"></i>
+                            定时触发工具
+                        </button>
+                        <button @click="reloadAgent" class="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-md transition-colors">
+                            <i data-lucide="refresh-cw" class="w-4 h-4"></i>
+                            重载配置/模型
+                        </button>
+                    </div>
+                    
+                    <div class="h-px bg-gray-200 dark:bg-gray-700 my-2"></div>
+
+                    <button @click="triggerAutonomous" v-if="status.autonomous_enabled" class="w-full flex items-center gap-2 px-3 py-2 text-sm text-purple-600 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-900/20 rounded-md transition-colors">
+                        <i data-lucide="zap" class="w-4 h-4"></i>
+                        立即触发自主行动
+                    </button>
+                     <button @click="injectSysPrompt" class="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-md transition-colors">
+                        <i data-lucide="refresh-cw" class="w-4 h-4"></i>
+                        重新注入Prompt
+                    </button>
+                    <button @click="stopTask" class="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-md transition-colors">
+                        <i data-lucide="square" class="w-4 h-4"></i>
+                        停止任务
+                    </button>
+                    <button @click="clearHistory" class="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-md transition-colors">
+                        <i data-lucide="trash-2" class="w-4 h-4"></i>
+                        清空历史
+                    </button>
+                </div>
+            </div>
+
+            <div class="p-4 border-t border-gray-200 dark:border-gray-700 text-xs text-center text-gray-400">
+                Copyright © 2026 KW@FUDAN  All Rights Reserved 
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="flex-1 flex flex-col h-full relative w-full bg-white dark:bg-gray-900 min-w-0">
+            <!-- Sidebar Expand Button -->
+            <button v-if="!sidebarOpen" @click="sidebarOpen = true" class="absolute left-0 top-1/2 -translate-y-1/2 z-30 p-1.5 bg-white dark:bg-gray-800 border border-l-0 border-gray-200 dark:border-gray-700 rounded-r-lg shadow-md hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300 transition-all hover:pl-2 hidden md:block">
+                <i data-lucide="chevron-right" class="w-5 h-5"></i>
+            </button>
+
+            <!-- Header -->
+            <header class="h-14 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 flex items-center px-4 justify-between shadow-sm z-10 shrink-0">
+                <button @click="sidebarOpen = !sidebarOpen" class="p-2 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300 transition-colors">
+                    <i data-lucide="menu" class="w-5 h-5"></i>
+                </button>
+                <div class="font-medium text-gray-700 dark:text-gray-200">对话</div>
+                <div class="w-8"></div> <!-- Spacer for balance -->
+            </header>
+
+            <!-- Chat Area -->
+            <div id="chat-container" @scroll="onChatScroll" class="flex-1 overflow-y-auto overflow-x-hidden p-4 space-y-6 scroll-smooth pb-32 min-w-0">
+                <div v-if="messages.length === 0" class="flex flex-col items-center justify-center h-full text-gray-400 dark:text-gray-500 min-h-[50vh]">
+                    <i data-lucide="message-square" class="w-12 h-12 mb-4 opacity-50"></i>
+                    <p>开始新的对话...</p>
+                </div>
+
+                <div v-if="hiddenCount > 0" class="max-w-4xl mx-auto w-full">
+                    <button @click="loadMoreHistory()" class="w-full text-xs py-2 px-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300 transition-colors">
+                        加载更早的 {{ hiddenCount }} 条消息
+                    </button>
+                </div>
+                
+                <div v-for="(msg, index) in visibleMessages" :key="msg.id || index" class="ga-message-card flex flex-col gap-1 max-w-4xl mx-auto animate-fade-in-up w-full">
+                    <div class="flex items-center gap-2 mb-1 px-1 ga-message-header">
+                        <div v-if="msg.role === 'user'" class="w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold shrink-0 bg-blue-100 text-blue-600 dark:bg-blue-900 dark:text-blue-300">
+                            U
+                        </div>
+                        <img v-else src="logo_square.png" class="w-6 h-6 rounded-md shrink-0 bg-white" alt="A">
+                        <span class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">{{ msg.role === 'user' ? 'User' : 'Assistant' }}</span>
+                        <span v-if="msg.source === 'autonomous'" class="text-xs bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200 px-1.5 py-0.5 rounded-full">自主行动</span>
+                        <span class="text-xs text-gray-400 ml-auto">{{ msg.timestamp }}</span>
+                    </div>
+                    
+                    <div class="prose dark:prose-invert max-w-none bg-white dark:bg-gray-800 p-4 pr-12 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 relative group transition-shadow hover:shadow-md break-words ga-message-body">
+                        <div v-if="msg.streaming" class="whitespace-pre-wrap break-words text-sm leading-6">{{ msg.content }}</div>
+                        <div v-else-if="msg.isFolded && !msg.expanded" class="not-prose">
+                            <div class="whitespace-pre-wrap break-words text-sm leading-6">{{ msg.preview }}</div>
+                            <div class="mt-3 flex items-center gap-2">
+                                <button @click="expandMessage(msg)" class="text-xs px-2 py-1 rounded-md bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors text-gray-700 dark:text-gray-200">展开全文</button>
+                                <span class="text-xs text-gray-400">已折叠 {{ (msg.content || '').length }} 字</span>
+                            </div>
+                        </div>
+                        <div v-else v-html="msg.html"></div>
+                        <button @click="copyToClipboard(msg.content)" class="absolute top-3 right-3 p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-400 hover:text-gray-600 ga-message-copy" title="复制内容">
+                            <i data-lucide="copy" class="w-3 h-3"></i>
+                        </button>
+                    </div>
+                </div>
+
+                <div v-if="isTyping" class="flex gap-2 max-w-4xl mx-auto w-full px-1">
+                    <img src="logo_square.png" class="w-6 h-6 rounded-md shrink-0 bg-white" alt="A">
+                    <div class="bg-white dark:bg-gray-800 p-3 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700">
+                        <div class="flex space-x-1">
+                            <div class="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style="animation-delay: 0ms"></div>
+                            <div class="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style="animation-delay: 150ms"></div>
+                            <div class="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style="animation-delay: 300ms"></div>
+                        </div>
+                    </div>
+                </div>
+                <div id="scroll-anchor"></div>
+            </div>
+
+            <button v-if="!stickToBottom" @click="jumpToLatest" class="absolute right-5 bottom-28 md:bottom-24 z-20 text-xs px-3 py-2 rounded-full shadow-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-200 transition-colors">
+                跳到最新
+            </button>
+
+            <!-- Input Area -->
+            <div class="p-4 bg-white dark:bg-gray-800 border-t border-gray-200 dark:border-gray-700 shrink-0">
+                <div class="max-w-4xl mx-auto relative">
+                    <textarea 
+                        v-model="inputMessage" 
+                        @keydown.enter.exact.prevent="sendMessage"
+                        placeholder="输入指令..." 
+                        class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl px-4 py-3 pr-12 focus:outline-none focus:ring-2 focus:ring-blue-500/50 resize-none h-14 max-h-48 transition-all scrollbar-hide text-sm sm:text-base"
+                        rows="1"
+                    ></textarea>
+                    <button 
+                        @click="sendMessage" 
+                        :disabled="!inputMessage.trim() || isTyping"
+                        class="absolute right-2 top-1/2 -translate-y-1/2 p-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm"
+                    >
+                        <i data-lucide="send" class="w-4 h-4"></i>
+                    </button>
+                </div>
+                <div class="text-center mt-2 text-xs text-gray-400 dark:text-gray-500 hidden sm:block">
+                    按 Enter 发送 • Shift + Enter 换行
+                </div>
+            </div>
+        </main>
+
+        <div v-if="activeModal" class="ga-modal-overlay fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div class="ga-modal-backdrop absolute inset-0 bg-black/50" @click="closeModal"></div>
+            <div class="ga-modal-panel relative bg-white dark:bg-gray-800 w-full max-w-5xl max-h-[85vh] rounded-lg shadow-xl border border-gray-200 dark:border-gray-700 flex flex-col overflow-hidden">
+                <div class="px-4 py-3 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
+                    <div class="font-medium text-gray-800 dark:text-gray-100">
+                        <template v-if="activeModal === 'model'">模型切换</template>
+                        <template v-else-if="activeModal === 'sop'">SOP 技能库</template>
+                        <template v-else-if="activeModal === 'todo'">ToDo 计划</template>
+                        <template v-else-if="activeModal === 'schedule'">定时触发工具</template>
+                    </div>
+                    <button @click="closeModal" class="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-500 dark:text-gray-300">
+                        <i data-lucide="x" class="w-5 h-5"></i>
+                    </button>
+                </div>
+
+                <div class="ga-modal-body flex-1 overflow-auto p-4">
+                    <template v-if="activeModal === 'model'">
+                        <div class="space-y-3">
+                            <div class="flex items-center justify-between">
+                                <div class="text-sm text-gray-500 dark:text-gray-400">点击模型切换；点钥匙配置该模型的 Key（默认不展示 Key）</div>
+                                <button @click="startNewModel" class="px-3 py-2 text-sm rounded-md bg-gray-200 text-gray-800 hover:bg-gray-300">新增模型</button>
+                            </div>
+
+                            <div class="space-y-2">
+                                <div v-for="(model, idx) in status.llm_list" :key="idx" class="flex items-center gap-2">
+                                    <button @click="switchLLM(model[0]); closeModal()" 
+                                        class="flex-1 flex items-center gap-2 px-3 py-2 text-sm rounded-md transition-colors text-left"
+                                        :class="model[2] ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300 font-medium' : 'text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700'">
+                                        <i :data-lucide="model[2] ? 'check-circle' : 'circle'" class="w-4 h-4 shrink-0"></i>
+                                        <span class="truncate">{{ model[1] }}</span>
+                                    </button>
+                                    <button v-if="model[3]" @click.stop="openKeyEditor(model[3])" class="p-2 rounded-md bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200">
+                                        <i data-lucide="key" class="w-4 h-4"></i>
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div v-if="keyEditorOpen" id="ga-key-editor" class="border border-gray-200 dark:border-gray-700 rounded-md p-3 space-y-2">
+                                <div class="text-sm font-medium text-gray-800 dark:text-gray-100 truncate">{{ editingTitle }}</div>
+
+                                <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
+                                    <div>
+                                        <div class="text-xs text-gray-500 dark:text-gray-400 mb-1">协议类型</div>
+                                        <select v-model="editType" :disabled="!!editingConfigId" class="w-full bg-transparent text-gray-800 dark:text-gray-100 border border-gray-300 dark:border-gray-700 rounded px-2 py-2 text-sm focus:outline-none">
+                                            <option value="oai">OpenAI-compatible</option>
+                                            <option value="claude">Claude</option>
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <div class="text-xs text-gray-500 dark:text-gray-400 mb-1">模型名称</div>
+                                        <input v-model="editModel" class="w-full bg-transparent text-gray-800 dark:text-gray-100 border border-gray-300 dark:border-gray-700 rounded px-2 py-2 text-sm focus:outline-none" placeholder="例如 gpt-4.1 / kimi-k2.5 / claude-opus-4-6" />
+                                    </div>
+                                    <div class="md:col-span-2">
+                                        <div class="text-xs text-gray-500 dark:text-gray-400 mb-1">API Base</div>
+                                        <input v-model="editApiBase" class="w-full bg-transparent text-gray-800 dark:text-gray-100 border border-gray-300 dark:border-gray-700 rounded px-2 py-2 text-sm focus:outline-none" placeholder="例如 https://api.openai.com/v1" />
+                                    </div>
+                                    <div class="md:col-span-2">
+                                        <div class="text-xs text-gray-500 dark:text-gray-400 mb-1">API Key</div>
+                                        <input v-model="editApiKey" type="password" class="w-full bg-transparent text-gray-800 dark:text-gray-100 border border-gray-300 dark:border-gray-700 rounded px-2 py-2 text-sm focus:outline-none" placeholder="不展示已保存的 Key；输入新 Key 用于更新/新增" />
+                                        <div v-if="editingHasKey" class="text-xs text-gray-400 mt-1">已配置（****{{ editingKeyLast4 }}）</div>
+                                    </div>
+                                </div>
+
+                                <div v-if="keyEditorNotice" class="text-sm text-green-700 dark:text-green-400">{{ keyEditorNotice }}</div>
+                                <div v-if="keyEditorError" class="text-sm text-red-600 dark:text-red-400">{{ keyEditorError }}</div>
+
+                                <div class="flex items-center justify-end gap-2 pt-1">
+                                    <button @click="closeKeyEditor" class="px-3 py-2 text-sm rounded-md bg-gray-200 hover:bg-gray-300 text-gray-800 dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-100 transition-colors">取消</button>
+                                    <button v-if="editingConfigId" @click="deleteConfig" class="px-3 py-2 text-sm rounded-md bg-red-600 text-white hover:bg-red-700">删除</button>
+                                    <button @click="testKeyEditor" :disabled="keyEditorBusy" :class="keyEditorBusy ? 'opacity-60 cursor-not-allowed' : ''" class="px-3 py-2 text-sm rounded-md bg-gray-200 hover:bg-gray-300 text-gray-800 dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-100 transition-colors">测试 API</button>
+                                    <button @click="saveKeyEditor" :disabled="!keyEditorTestOk || keyEditorBusy" :class="(!keyEditorTestOk || keyEditorBusy) ? 'bg-gray-400 hover:bg-gray-400 cursor-not-allowed opacity-70' : 'bg-gray-600 hover:bg-gray-700'" class="px-3 py-2 text-sm rounded-md text-white">保存并重载</button>
+                                </div>
+                            </div>
+                        </div>
+                    </template>
+
+                    <template v-else-if="activeModal === 'todo'">
+                        <div class="space-y-3">
+                            <textarea v-model="todoContent" class="ga-todo-textarea w-full h-[55vh] font-mono text-sm bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-md p-3 focus:outline-none focus:ring-2 focus:ring-blue-500"></textarea>
+                            <div class="flex items-center justify-end gap-2">
+                                <button @click="saveToDo" class="px-3 py-2 text-sm rounded-md bg-gray-200 text-gray-800 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-100 transition-colors">保存</button>
+                            </div>
+                        </div>
+                    </template>
+
+                    <template v-else-if="activeModal === 'sop'">
+                        <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                            <div class="md:col-span-1 border border-gray-200 dark:border-gray-700 rounded-md overflow-hidden">
+                                <div class="px-3 py-2 text-xs font-semibold text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700">文件</div>
+                                <div class="max-h-[55vh] overflow-auto">
+                                    <button v-for="f in sopFiles" :key="f" @click="selectSop(f)" class="w-full text-left px-3 py-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-700" :class="selectedSop === f ? 'bg-blue-50 dark:bg-blue-900/20' : ''">
+                                        {{ f }}
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="md:col-span-2 border border-gray-200 dark:border-gray-700 rounded-md overflow-hidden">
+                                <div class="px-3 py-2 text-xs font-semibold text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
+                                    <span class="truncate">{{ selectedSop || '未选择' }}</span>
+                                    <div class="flex items-center gap-2">
+                                        <button v-if="selectedSop && !sopEditMode" @click="startEditSop" class="text-xs px-2 py-1 rounded bg-gray-200 text-gray-800 hover:bg-gray-300">编辑</button>
+                                        <button v-if="selectedSop && sopEditMode" @click="saveSop" class="text-xs px-2 py-1 rounded bg-gray-200 text-gray-800 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-100 transition-colors">保存</button>
+                                        <button v-if="selectedSop && sopEditMode" @click="cancelEditSop" class="text-xs px-2 py-1 rounded bg-gray-200 hover:bg-gray-300 text-gray-800 dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-100 transition-colors">取消</button>
+                                        <button v-if="selectedSop && !sopEditMode" @click="reloadSop" class="text-xs px-2 py-1 rounded bg-gray-200 hover:bg-gray-300 text-gray-800 dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-100 transition-colors">刷新</button>
+                                    </div>
+                                </div>
+                                <div class="p-3 max-h-[55vh] overflow-auto">
+                                    <textarea v-if="sopEditMode" v-model="sopDraft" class="w-full h-[55vh] font-mono text-sm bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-md p-3 focus:outline-none focus:ring-2 focus:ring-blue-500"></textarea>
+                                    <div v-else class="prose prose-sm dark:prose-invert max-w-none" v-html="renderMarkdown(sopContent)"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </template>
+
+                    <template v-else-if="activeModal === 'schedule'">
+                        <div class="space-y-3">
+                            <div class="flex items-center justify-between border border-gray-200 dark:border-gray-700 rounded-md p-3">
+                                <div class="flex items-center gap-2">
+                                    <span class="text-sm text-gray-700 dark:text-gray-200">启用定时轮询</span>
+                                    <button @click="toggleScheduler" class="relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+                                        :class="status.scheduler_enabled ? 'bg-green-500' : 'bg-gray-300'">
+                                        <span class="inline-block h-3 w-3 transform rounded-full bg-white transition duration-200 ease-in-out"
+                                            :class="status.scheduler_enabled ? 'translate-x-5' : 'translate-x-1'"></span>
+                                    </button>
+                                </div>
+                                <div class="flex items-center gap-2">
+                                    <span class="text-sm text-gray-700 dark:text-gray-200">间隔</span>
+                                    <select v-model="status.scheduler_interval" @change="setSchedulerInterval" class="bg-transparent border border-gray-300 dark:border-gray-700 rounded px-2 py-1 text-sm focus:outline-none">
+                                        <option :value="30">30s</option>
+                                        <option :value="60">60s</option>
+                                        <option :value="300">300s</option>
+                                        <option :value="600">600s</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                <div class="md:col-span-1 border border-gray-200 dark:border-gray-700 rounded-md overflow-hidden">
+                                    <div class="px-3 py-2 text-xs font-semibold text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
+                                        <span>任务</span>
+                                        <button @click="newScheduleTask" class="text-xs px-2 py-1 rounded bg-gray-200 text-gray-800 hover:bg-gray-300">新建</button>
+                                    </div>
+                                    <div class="max-h-[55vh] overflow-auto">
+                                        <div class="px-3 py-2 text-xs font-semibold text-gray-400">pending</div>
+                                        <button v-for="f in scheduleFiles.pending" :key="'p-'+f" @click="selectSchedule('pending', f)" class="w-full text-left px-3 py-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-700" :class="selectedScheduleBucket==='pending' && selectedScheduleName===f ? 'bg-blue-50 dark:bg-blue-900/20' : ''">{{ f }}</button>
+                                        <div class="px-3 py-2 text-xs font-semibold text-gray-400">running</div>
+                                        <button v-for="f in scheduleFiles.running" :key="'r-'+f" @click="selectSchedule('running', f)" class="w-full text-left px-3 py-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-700" :class="selectedScheduleBucket==='running' && selectedScheduleName===f ? 'bg-blue-50 dark:bg-blue-900/20' : ''">{{ f }}</button>
+                                        <div class="px-3 py-2 text-xs font-semibold text-gray-400">done</div>
+                                        <button v-for="f in scheduleFiles.done" :key="'d-'+f" @click="selectSchedule('done', f)" class="w-full text-left px-3 py-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-700" :class="selectedScheduleBucket==='done' && selectedScheduleName===f ? 'bg-blue-50 dark:bg-blue-900/20' : ''">{{ f }}</button>
+                                    </div>
+                                </div>
+                                <div class="md:col-span-2 border border-gray-200 dark:border-gray-700 rounded-md overflow-hidden">
+                                    <div class="px-3 py-2 text-xs font-semibold text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
+                                        <span class="truncate">{{ selectedScheduleBucket ? (selectedScheduleBucket + '/' + selectedScheduleName) : '未选择' }}</span>
+                                        <div class="flex items-center gap-2">
+                                            <button v-if="selectedScheduleBucket" @click="saveSchedule" class="text-xs px-2 py-1 rounded bg-gray-200 text-gray-800 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-100 transition-colors">保存</button>
+                                            <button v-if="selectedScheduleBucket" @click="deleteSchedule" class="text-xs px-2 py-1 rounded bg-gray-200 text-gray-800 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-100 transition-colors">删除</button>
+                                            <button @click="refreshScheduleList" class="text-xs px-2 py-1 rounded bg-gray-200 hover:bg-gray-300 text-gray-800 dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-100 transition-colors">刷新</button>
+                                        </div>
+                                    </div>
+                                    <div class="p-3 space-y-2">
+                                        <div class="flex items-center gap-2">
+                                            <select v-model="selectedScheduleBucket" class="bg-transparent border border-gray-300 dark:border-gray-700 rounded px-2 py-1 text-sm focus:outline-none">
+                                                <option value="pending">pending</option>
+                                                <option value="running">running</option>
+                                                <option value="done">done</option>
+                                            </select>
+                                            <input v-model="selectedScheduleName" class="flex-1 bg-transparent border border-gray-300 dark:border-gray-700 rounded px-2 py-1 text-sm focus:outline-none" placeholder="文件名（含 .md）"/>
+                                        </div>
+                                        <textarea v-model="scheduleContent" class="w-full h-[45vh] font-mono text-sm bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-md p-3 focus:outline-none focus:ring-2 focus:ring-blue-500"></textarea>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Overlay for mobile sidebar -->
+        <div v-if="sidebarOpen" @click="sidebarOpen = false" class="md:hidden fixed inset-0 bg-black/50 z-10"></div>
+    </div>
+
+    <!-- Marked.js for Markdown rendering -->
+    <!-- Use a specific version known to work well with older browsers if needed, or polyfill Array.at -->
+    <script>
+        // Polyfill for Array.prototype.at (needed for older WebEngine/Safari versions)
+        if (!Array.prototype.at) {
+            Array.prototype.at = function(n) {
+                // ToInteger() abstract op
+                n = Math.trunc(n) || 0;
+                // Allow negative indexing from the end
+                if (n < 0) n += this.length;
+                // OOB access is guaranteed to return undefined
+                if (n < 0 || n >= this.length) return undefined;
+                // Otherwise, this is just normal property access
+                return this[n];
+            };
+        }
+        
+        // Polyfill for String.prototype.at
+        if (!String.prototype.at) {
+            String.prototype.at = function(n) {
+                n = Math.trunc(n) || 0;
+                if (n < 0) n += this.length;
+                if (n < 0 || n >= this.length) return undefined;
+                return this[n];
+            };
+        }
+
+        // Polyfill for Element.matches / Element.closest (older WebEngine)
+        if (window.Element && !Element.prototype.matches) {
+            Element.prototype.matches = Element.prototype.msMatchesSelector || Element.prototype.webkitMatchesSelector;
+        }
+        if (window.Element && !Element.prototype.closest) {
+            Element.prototype.closest = function(s) {
+                let el = this;
+                while (el && el.nodeType === 1) {
+                    if (el.matches && el.matches(s)) return el;
+                    el = el.parentElement || el.parentNode;
+                }
+                return null;
+            };
+        }
+    </script>
+    <script src="./vendor/marked.umd.js"></script>
+    <script src="app.js?v=12"></script>
+</body>
+</html>

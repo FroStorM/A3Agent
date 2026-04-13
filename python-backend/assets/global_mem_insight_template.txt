@@ -1,0 +1,17 @@
+# [Global Memory Insight]
+# 【引导注释 - 使用后请删除整个注释块】
+# 格式：两层「场景→记忆」映射 + RULES，总计≤30行
+#
+# == 第一层：高频场景 key→value ==
+# 每行格式: 触发场景关键词: sop名/py名/L2:section名(关键参数)
+# 示例: 境外网站/API: proxies={'https':'http://127.0.0.1:2082'}
+# 示例: 微信发消息: wechat_send_sop | 微信读聊天: wechat_db_sop+wechat_db_utils(quick_connect)
+# 可用 | 分隔同类场景，括号内放硬参数
+#
+# == 第二层：低频关键词，自包含可只写一个词 ==
+# 格式: 一行内用 | 分隔多个关键词，需要时 read L2 或 ls memory/ 查详情
+# 示例: 邮件ezgmail | 游戏game | OCR | 华为云Huawei_Cloud
+#
+# == [RULES] ==
+# 压缩的通用操作准则，每条一行
+# 示例: 1. 搜索先行: 文件用es, 信息用google, 禁猜路径

@@ -1,0 +1,24 @@
+{
+  "name": "a3-agent",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "tauri": "node ./node_modules/@tauri-apps/cli/tauri.js",
+    "build:frontend": "node ./node_modules/tailwindcss/lib/cli.js -c frontend/tailwind.config.cjs -i frontend/tailwind-input.css -o frontend/vendor/tailwind.css --minify",
+    "start:web": "python3 python-backend/web_main.py",
+    "check:mac": "bash ./check_env.sh",
+    "build:mac": "bash ./build_standalone_macos.sh"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2",
+    "autoprefixer": "^10.4.27",
+    "postcss": "^8.5.8",
+    "tailwindcss": "^3.4.17"
+  },
+  "dependencies": {
+    "lucide": "^1.7.0",
+    "marked": "^17.0.5",
+    "vue": "^3.5.31"
+  }
+}
