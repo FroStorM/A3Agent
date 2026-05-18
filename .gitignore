@@ -43,6 +43,8 @@ desktop_pet.json
 tasks/
 
 *.zip
+!release/
+!release/**
 
 memory/*
 !memory/memory_management_sop.md
