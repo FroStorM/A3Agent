@@ -8,6 +8,7 @@ __pycache__/
 venv/
 env/
 .pydeps/
+.git_ssh/
 build/
 dist/
 *.egg-info/
