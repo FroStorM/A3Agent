@@ -1,0 +1,31 @@
+{
+  "name": "库胡勒阿乔",
+  "version": "1.0.0",
+  "author": "Genshin Fan",
+  "description": "库胡勒阿乔，龙时代的遗物，烈焰之国的至高领主",
+  "style": "pixel",
+  "format": "sprite",
+  "size": { "width": 150, "height": 150 },
+  "animations": {
+    "idle": {
+      "file": "idle_sheet.png",
+      "loop": true,
+      "sprite": { "frameWidth": 150, "frameHeight": 150, "frameCount": 4, "columns": 4, "fps": 8 }
+    },
+    "walk": {
+      "file": "walk_sheet.png",
+      "loop": true,
+      "sprite": { "frameWidth": 150, "frameHeight": 150, "frameCount": 4, "columns": 4, "fps": 10 }
+    },
+    "attack": {
+      "file": "attack_sheet.png",
+      "loop": false,
+      "sprite": { "frameWidth": 150, "frameHeight": 150, "frameCount": 4, "columns": 4, "fps": 12 }
+    },
+    "hurt": {
+      "file": "hurt_sheet.png",
+      "loop": false,
+      "sprite": { "frameWidth": 150, "frameHeight": 150, "frameCount": 4, "columns": 4, "fps": 10 }
+    }
+  }
+}
