@@ -1,13 +1,66 @@
 """Desktop Pet with Skin System — Cross-platform with True Transparency"""
+import argparse
 import os, re, sys, json, threading, io
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
+for _stream_name in ('stdout', 'stderr'):
+    _stream = getattr(sys, _stream_name, None)
+    if _stream is not None and hasattr(_stream, 'reconfigure'):
+        try:
+            _stream.reconfigure(encoding='utf-8', errors='replace')
+        except Exception:
+            pass
+
 PORT = 41983
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
 SKINS_DIR = os.path.join(SCRIPT_DIR, 'skins')
+
+
+def _bool_arg(value):
+    return str(value).strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def _resolve_skin_name(skin_name):
+    available = SkinLoader.list_skins()
+    if not available:
+        return skin_name
+    if skin_name in (None, '', 'legacy-pet'):
+        return 'vita' if 'vita' in available else available[0]
+    return skin_name if skin_name in available else available[0]
+
+
+def _apply_square_size(width, height, size):
+    if size is None:
+        return width, height
+    try:
+        target = max(48, min(220, int(size)))
+    except Exception:
+        return width, height
+    return target, target
+
+
+def _window_position(root, width, height, position='right-bottom', x=None, y=None):
+    screen_width = root.winfo_screenwidth()
+    screen_height = root.winfo_screenheight()
+    margin_x = 28
+    margin_y = 64
+    if position == 'custom' and x is not None and y is not None:
+        try:
+            return int(float(x)), int(float(y))
+        except Exception:
+            pass
+    if position == 'right-top':
+        return screen_width - width - margin_x, margin_x
+    if position == 'left-bottom':
+        return margin_x, screen_height - height - margin_y
+    if position == 'left-top':
+        return margin_x, margin_x
+    if position == 'center':
+        return (screen_width - width) // 2, (screen_height - height) // 2
+    return screen_width - width - margin_x, screen_height - height - margin_y
 
 class SkinLoader:
     """Load and parse skin configuration"""
@@ -279,10 +332,10 @@ class PetBase:
             HTTPServer.allow_reuse_address = True
             srv = HTTPServer(('127.0.0.1', PORT), Handler)
             threading.Thread(target=srv.serve_forever, daemon=True).start()
-            print(f'✓ Server: http://127.0.0.1:{PORT}/?state=walk')
+            print(f'Server: http://127.0.0.1:{PORT}/?state=walk')
         except OSError as e:
             if e.errno == 48:
-                print(f'⚠ Port {PORT} already in use')
+                print(f'Port {PORT} already in use')
             else:
                 raise
 
@@ -450,7 +503,7 @@ if sys.platform == 'darwin':
             # Start HTTP server
             self._start_server()
 
-            print(f"✓ macOS Pet started at ({x_pos}, {y_pos})")
+            print(f"macOS Pet started at ({x_pos}, {y_pos})")
             print(f"  Animations: {', '.join(self.animations.keys())}")
 
         def load_skin(self, skin_name=None):
@@ -525,7 +578,7 @@ if sys.platform == 'darwin':
                     None,
                     True
                 )
-                print(f"→ State: {state}")
+                print(f"State: {state}")
 
         def _schedule_main(self, fn):
             AppHelper.callAfter(fn)
@@ -617,27 +670,36 @@ else:
         from PIL import ImageTk
 
         class WinPet(PetBase):
-            def __init__(self, skin_name=None):
+            def __init__(self, skin_name=None, size=None, always_on_top=True, show_shadow=False, position='right-bottom', x=None, y=None):
                 self.root = tk.Tk()
-                self.root.wm_attributes('-topmost', True)
+                self.root.wm_attributes('-topmost', bool(always_on_top))
                 self.is_windows = sys.platform.startswith('win')
                 self.platform_name = 'Windows' if self.is_windows else 'Linux'
                 self.pet_bg_color = '#F0F0F0' if self.is_windows else 'black'
                 self.toast_bg_color = '#00ff01' if self.is_windows else 'black'
+                self.config_size = size
+                self.config_position = position
+                self.config_x = x
+                self.config_y = y
+                self.config_always_on_top = bool(always_on_top)
+                self.config_show_shadow = bool(show_shadow)
 
                 # Load skin
                 self.load_skin(skin_name)
 
                 # Setup window
-                screen_width = self.root.winfo_screenwidth()
-                screen_height = self.root.winfo_screenheight()
-
-                x_pos = screen_width - 200
-                y_pos = screen_height - 300
+                x_pos, y_pos = _window_position(
+                    self.root,
+                    self.display_width,
+                    self.display_height,
+                    self.config_position,
+                    self.config_x,
+                    self.config_y,
+                )
 
                 self.root.geometry(f'{self.display_width}x{self.display_height}+{x_pos}+{y_pos}')
                 self.root.overrideredirect(True)
-                self.root.wm_attributes('-topmost', True)
+                self.root.wm_attributes('-topmost', self.config_always_on_top)
 
                 # Transparent background
                 if self.is_windows:
@@ -666,7 +728,7 @@ else:
                 self._animate()
                 self._start_server()
 
-                print(f"✓ {self.platform_name} Pet started at ({x_pos}, {y_pos})")
+                print(f"{self.platform_name} Pet started at ({x_pos}, {y_pos})")
                 print(f"  Animations: {', '.join(self.animations.keys())}")
 
                 self.root.mainloop()
@@ -677,8 +739,7 @@ else:
                 if not available_skins:
                     raise FileNotFoundError(f"No skins found in {SKINS_DIR}")
 
-                if skin_name is None or skin_name not in available_skins:
-                    skin_name = available_skins[0]
+                skin_name = _resolve_skin_name(skin_name)
 
                 skin_path = os.path.join(SKINS_DIR, skin_name)
                 self.skin_config = SkinLoader.load_skin(skin_path)
@@ -687,6 +748,11 @@ else:
                 display_size = self.skin_config.get('size', {})
                 self.display_width = display_size.get('width', 128)
                 self.display_height = display_size.get('height', 128)
+                self.display_width, self.display_height = _apply_square_size(
+                    self.display_width,
+                    self.display_height,
+                    getattr(self, 'config_size', None),
+                )
 
                 # Load animations
                 self.animations = {}
@@ -711,7 +777,7 @@ else:
                 if state in self.animations and state != self.current_state:
                     self.current_state = state
                     self.frame_idx = 0
-                    print(f"→ State: {state}")
+                    print(f"State: {state}")
 
             def _drag(self, e):
                 x = self.root.winfo_x() + e.x - self._d[0]
@@ -809,6 +875,7 @@ else:
             def _change_skin(self, skin_name):
                 print(f"Changing skin to: {skin_name}")
                 self.load_skin(skin_name)
+                self.root.geometry(f'{self.display_width}x{self.display_height}')
                 self.current_state = 'idle'
                 self.frame_idx = 0
     else:
@@ -899,7 +966,7 @@ else:
                 self.window.show()
                 self._start_server()
 
-                print(f"✓ Linux PySide6 Pet started at ({x_pos}, {y_pos})")
+                print(f"Linux PySide6 Pet started at ({x_pos}, {y_pos})")
                 print(f"  Animations: {', '.join(self.animations.keys())}")
 
             def _pil_to_qpixmap(self, pil_img):
@@ -966,7 +1033,7 @@ else:
                     self.current_state = state
                     self.frame_idx = 0
                     self._restart_animation_timer()
-                    print(f"→ State: {state}")
+                    print(f"State: {state}")
 
             def _show_context_menu(self, global_pos):
                 menu = QMenu(self.window)
@@ -1059,24 +1126,46 @@ else:
             def run(self):
                 self.app.exec()
 
+def parse_args():
+    parser = argparse.ArgumentParser(description='A3Agent desktop pet')
+    parser.add_argument('--skin', default='legacy-pet')
+    parser.add_argument('--size', type=int, default=None)
+    parser.add_argument('--position', default='right-bottom')
+    parser.add_argument('--x', type=float, default=None)
+    parser.add_argument('--y', type=float, default=None)
+    parser.add_argument('--always-on-top', default='1')
+    parser.add_argument('--show-shadow', default='0')
+    return parser.parse_args()
+
+
 if __name__ == '__main__':
+    args = parse_args()
+    skin_name = _resolve_skin_name(args.skin)
+
     # Singleton: if port already in use, another instance is running
     import socket
     _s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         _s.connect(('127.0.0.1', PORT))
         _s.close()
-        print(f'⚠ Pet already running on port {PORT}, exiting.')
+        print(f'Pet already running on port {PORT}, exiting.')
         sys.exit(0)
     except ConnectionRefusedError:
         pass
 
     if sys.platform == 'darwin':
-        pet = MacPet('vita')
+        pet = MacPet(skin_name)
         pet.run()
     elif sys.platform.startswith('win'):
-        pet = WinPet('vita')
+        pet = WinPet(
+            skin_name,
+            size=args.size,
+            always_on_top=_bool_arg(args.always_on_top),
+            show_shadow=_bool_arg(args.show_shadow),
+            position=args.position,
+            x=args.x,
+            y=args.y,
+        )
     else:
-        pet = LinuxPet('vita')
+        pet = LinuxPet(skin_name)
         pet.run()
-

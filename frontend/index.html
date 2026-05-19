@@ -174,6 +174,29 @@
         .scrollbar-hide::-webkit-scrollbar { display: none; }
         .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
         *, *::before, *::after { box-sizing: border-box; }
+        .ga-sidebar {
+            width: 16rem;
+            flex: 0 0 16rem;
+            transition: width 220ms ease, flex-basis 220ms ease, opacity 180ms ease, border-color 180ms ease;
+        }
+        .ga-sidebar.is-collapsed {
+            width: 0;
+            flex-basis: 0;
+            opacity: 0;
+            border-width: 0;
+            pointer-events: none;
+        }
+        @media (max-width: 767px) {
+            .ga-sidebar {
+                position: absolute;
+                width: 16rem;
+                flex-basis: 16rem;
+            }
+            .ga-sidebar.is-collapsed {
+                transform: translateX(-100%);
+                opacity: 0;
+            }
+        }
 
         .ga-modal-overlay {
             position: fixed;
@@ -843,6 +866,222 @@
             background-color: #d1d5db !important;
         }
 
+        .ga-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.35rem;
+            border: 1px solid rgba(148, 163, 184, 0.34) !important;
+            border-radius: 999px;
+            min-height: 2rem;
+            padding: 0.4rem 0.85rem;
+            font-size: 0.875rem;
+            font-weight: 600;
+            line-height: 1;
+            letter-spacing: -0.01em;
+            transition: transform 160ms ease, box-shadow 160ms ease, background 160ms ease, color 160ms ease, border-color 160ms ease, opacity 160ms ease;
+            box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+        }
+        .ga-btn:hover:not(:disabled) {
+            transform: translateY(-1px);
+        }
+        .ga-btn:disabled {
+            opacity: 0.52;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+        .ga-btn-xs {
+            min-height: 1.75rem;
+            padding: 0.34rem 0.68rem;
+            font-size: 0.75rem;
+        }
+        .ga-btn-icon {
+            width: 2rem;
+            min-height: 2rem;
+            padding: 0;
+            border-radius: 0.7rem;
+        }
+        .ga-btn-primary {
+            color: #ffffff !important;
+            border-color: rgba(14, 116, 144, 0.2) !important;
+            background: linear-gradient(135deg, #0891b2 0%, #0e7490 100%) !important;
+            box-shadow: 0 8px 18px rgba(14, 116, 144, 0.18);
+        }
+        .ga-btn-primary:hover:not(:disabled) {
+            background: linear-gradient(135deg, #06a6cc 0%, #0891b2 100%) !important;
+            box-shadow: 0 10px 22px rgba(14, 116, 144, 0.24);
+        }
+        .ga-btn-secondary,
+        .ga-btn-ghost {
+            color: var(--text-secondary) !important;
+            background: linear-gradient(145deg, rgba(255,255,255,0.9), rgba(241,245,249,0.92)) !important;
+        }
+        .ga-btn-secondary:hover:not(:disabled),
+        .ga-btn-ghost:hover:not(:disabled) {
+            color: var(--text-primary) !important;
+            background: linear-gradient(145deg, #ffffff, #e2e8f0) !important;
+            box-shadow: 0 7px 16px rgba(15, 23, 42, 0.08);
+        }
+        .ga-btn-danger {
+            color: #b91c1c !important;
+            border-color: rgba(248, 113, 113, 0.42) !important;
+            background: linear-gradient(145deg, #fff7f7, #fee2e2) !important;
+        }
+        .ga-btn-danger:hover:not(:disabled) {
+            color: #ffffff !important;
+            background: linear-gradient(135deg, #ef4444, #dc2626) !important;
+            box-shadow: 0 8px 18px rgba(220, 38, 38, 0.18);
+        }
+        html.dark .ga-btn-secondary,
+        html.dark .ga-btn-ghost {
+            background: linear-gradient(145deg, rgba(31,41,55,0.95), rgba(17,24,39,0.94)) !important;
+            border-color: rgba(75, 85, 99, 0.82) !important;
+            color: #d1d5db !important;
+        }
+        html.dark .ga-btn-secondary:hover:not(:disabled),
+        html.dark .ga-btn-ghost:hover:not(:disabled) {
+            background: linear-gradient(145deg, #374151, #1f2937) !important;
+            color: #f3f4f6 !important;
+        }
+        html.dark .ga-btn-danger {
+            color: #fecaca !important;
+            background: linear-gradient(145deg, rgba(127,29,29,0.42), rgba(69,10,10,0.45)) !important;
+            border-color: rgba(248, 113, 113, 0.35) !important;
+        }
+        html.dark .ga-btn-danger:hover:not(:disabled) {
+            color: #ffffff !important;
+            background: linear-gradient(135deg, #dc2626, #991b1b) !important;
+        }
+
+        .ga-pet-switch {
+            position: relative;
+            display: inline-flex;
+            width: 4.25rem;
+            height: 2.25rem;
+            flex-shrink: 0;
+            cursor: pointer;
+            align-items: center;
+            -webkit-tap-highlight-color: transparent;
+        }
+        .ga-pet-switch input {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            margin: -1px;
+            overflow: hidden;
+            clip: rect(0, 0, 0, 0);
+            white-space: nowrap;
+            border: 0;
+        }
+        .ga-pet-switch-track {
+            position: absolute;
+            inset: 0;
+            border-radius: 999px;
+            background: linear-gradient(145deg, #eef2f7, #dce2eb);
+            box-shadow:
+                inset 4px 4px 8px rgba(142, 152, 169, 0.2),
+                inset -4px -4px 8px rgba(255, 255, 255, 0.78),
+                0 8px 16px rgba(125, 138, 156, 0.14);
+            transition: background 260ms ease, box-shadow 260ms ease;
+        }
+        .ga-pet-switch-thumb {
+            position: absolute;
+            top: 0.26rem;
+            left: 0.28rem;
+            width: 1.72rem;
+            height: 1.72rem;
+            border-radius: 999px;
+            background:
+                radial-gradient(circle at 35% 28%, rgba(255, 255, 255, 1), rgba(255, 255, 255, 0.92) 62%, rgba(245, 247, 250, 0.98));
+            box-shadow:
+                0 7px 13px rgba(102, 116, 136, 0.2),
+                -3px -3px 8px rgba(255, 255, 255, 0.84),
+                inset 0 0 0 1px rgba(255, 255, 255, 0.86);
+            transform: translateX(0);
+            transition: transform 260ms cubic-bezier(.2, .9, .25, 1.18), box-shadow 260ms ease;
+        }
+        .ga-pet-switch-thumb::after {
+            content: "";
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            width: 0.58rem;
+            height: 0.58rem;
+            border: 0.16rem solid #b8bdc7;
+            border-radius: 999px;
+            transform: translate(-50%, -50%);
+            opacity: 0.95;
+            transition: width 200ms ease, height 200ms ease, border 200ms ease, border-radius 200ms ease;
+        }
+        .ga-pet-switch input:checked + .ga-pet-switch-track {
+            background: linear-gradient(105deg, #72e4c5 0%, #62d7d0 48%, #56b7d8 100%);
+            box-shadow:
+                inset 4px 4px 8px rgba(26, 130, 137, 0.14),
+                inset -4px -4px 9px rgba(255, 255, 255, 0.28),
+                0 9px 18px rgba(68, 190, 196, 0.2);
+        }
+        .ga-pet-switch input:checked + .ga-pet-switch-track .ga-pet-switch-thumb {
+            transform: translateX(1.95rem);
+            box-shadow:
+                0 8px 14px rgba(46, 129, 150, 0.22),
+                -3px -3px 8px rgba(255, 255, 255, 0.62),
+                inset 0 0 0 1px rgba(255, 255, 255, 0.92);
+        }
+        .ga-pet-switch input:checked + .ga-pet-switch-track .ga-pet-switch-thumb::after {
+            width: 0.16rem;
+            height: 0.82rem;
+            border: 0;
+            border-radius: 999px;
+            background: #b8bbc2;
+        }
+        html.dark .ga-pet-switch-track {
+            background: linear-gradient(145deg, #2b3442, #222a36);
+            box-shadow:
+                inset 4px 4px 8px rgba(0, 0, 0, 0.26),
+                inset -4px -4px 8px rgba(255, 255, 255, 0.04),
+                0 8px 16px rgba(0, 0, 0, 0.22);
+        }
+        .ga-pet-skin-card {
+            width: 100%;
+            text-align: left;
+            border-radius: 0.5rem;
+            border: 1px solid;
+            padding: 0.5rem 0.75rem;
+            transition: background-color 160ms ease, border-color 160ms ease;
+        }
+        .ga-pet-skin-actions {
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+            flex-shrink: 0;
+        }
+        .ga-pet-skin-pill {
+            border: 1px solid;
+            border-radius: 999px;
+            padding: 0.22rem 0.6rem;
+            font-size: 0.75rem;
+            line-height: 1rem;
+        }
+        .ga-pet-skin-delete {
+            border-radius: 999px;
+            padding: 0.22rem 0.6rem;
+            font-size: 0.75rem;
+            line-height: 1rem;
+            color: #dc2626 !important;
+            background: rgba(254, 226, 226, 0.75) !important;
+            border: 1px solid rgba(248, 113, 113, 0.45) !important;
+            transition: background-color 160ms ease, color 160ms ease;
+        }
+        .ga-pet-skin-delete:hover:not(:disabled) {
+            background: #fecaca !important;
+            color: #991b1b !important;
+        }
+        .ga-pet-skin-delete:disabled {
+            opacity: 0.45;
+            cursor: not-allowed;
+        }
+
         /* Modal - textarea backgrounds */
         .ga-modal-panel textarea {
             background-color: var(--bg-secondary) !important;
@@ -958,8 +1197,8 @@
     </div>
     <div id="app" v-cloak class="flex h-full w-full overflow-hidden">
         <!-- Sidebar -->
-        <aside class="w-64 bg-white dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700 flex flex-col transition-all duration-300 z-20 absolute md:relative h-full shadow-lg md:shadow-none overflow-hidden" 
-               :class="{'w-0 opacity-0 border-none': !sidebarOpen, 'w-64 opacity-100': sidebarOpen}">
+        <aside class="ga-sidebar bg-white dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700 flex flex-col z-20 md:relative h-full shadow-lg md:shadow-none overflow-hidden"
+               :class="{'is-collapsed': !sidebarOpen}">
             <div class="p-4 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between h-14">
                 <div class="flex items-center gap-2 min-w-0">
                     <img src="logo_square.png" class="w-8 h-8 rounded-md" alt="Logo">
@@ -1210,7 +1449,7 @@
                         <div class="space-y-3">
                             <div class="flex items-center justify-between">
                                 <div class="text-sm text-gray-500 dark:text-gray-400">点击模型切换；点钥匙配置该模型的 Key（默认不展示 Key）</div>
-                                <button @click="startNewModel" class="px-3 py-2 text-sm rounded-md bg-gray-200 text-gray-800 hover:bg-gray-300">新增模型</button>
+                                <button @click="startNewModel" class="ga-btn ga-btn-secondary">新增模型</button>
                             </div>
 
                             <div class="space-y-2">
@@ -1224,7 +1463,7 @@
                                             <span v-if="model[3]" class="text-[11px] opacity-70 truncate">{{ model[3] }}</span>
                                         </span>
                                     </button>
-                                    <button v-if="model[3]" @click.stop="openKeyEditor(model[3])" class="p-2 rounded-md bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200">
+                                    <button v-if="model[3]" @click.stop="openKeyEditor(model[3])" class="ga-btn ga-btn-secondary ga-btn-icon">
                                         <i data-lucide="key" class="w-4 h-4"></i>
                                     </button>
                                 </div>
@@ -1260,10 +1499,10 @@
                                 <div v-if="keyEditorError" class="text-sm text-red-600 dark:text-red-400">{{ keyEditorError }}</div>
 
                                 <div class="flex items-center justify-end gap-2 pt-1">
-                                    <button @click="closeKeyEditor" class="px-3 py-2 text-sm rounded-md bg-gray-200 hover:bg-gray-300 text-gray-800 dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-100 transition-colors">取消</button>
-                                    <button v-if="editingConfigId" @click="deleteConfig" class="px-3 py-2 text-sm rounded-md bg-red-600 text-white hover:bg-red-700">删除</button>
-                                    <button @click="testKeyEditor" :disabled="keyEditorBusy" :class="keyEditorBusy ? 'opacity-60 cursor-not-allowed' : ''" class="px-3 py-2 text-sm rounded-md bg-gray-200 hover:bg-gray-300 text-gray-800 dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-100 transition-colors">测试 API</button>
-                                    <button @click="saveKeyEditor" :disabled="!keyEditorTestOk || keyEditorBusy" :class="(!keyEditorTestOk || keyEditorBusy) ? 'bg-gray-300 hover:bg-gray-300 cursor-not-allowed opacity-50 text-gray-500' : 'bg-cyan-500 hover:bg-cyan-400 text-white shadow-sm'" class="px-3 py-2 text-sm rounded-md transition-colors">保存并重载</button>
+                                    <button @click="closeKeyEditor" class="ga-btn ga-btn-secondary">取消</button>
+                                    <button v-if="editingConfigId" @click="deleteConfig" class="ga-btn ga-btn-danger">删除</button>
+                                    <button @click="testKeyEditor" :disabled="keyEditorBusy" class="ga-btn ga-btn-secondary">测试 API</button>
+                                    <button @click="saveKeyEditor" :disabled="!keyEditorTestOk || keyEditorBusy" class="ga-btn ga-btn-primary">保存并重载</button>
                                 </div>
                             </div>
                         </div>
@@ -1275,7 +1514,7 @@
                         <div class="space-y-3">
                             <textarea v-model="todoContent" class="ga-todo-textarea w-full h-[55vh] font-mono text-sm bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-md p-3 focus:outline-none focus:ring-2 focus:ring-blue-500"></textarea>
                             <div class="flex items-center justify-end gap-2">
-                                <button @click="saveToDo" class="px-3 py-2 text-sm rounded-md bg-gray-200 text-gray-800 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-100 transition-colors">保存</button>
+                                <button @click="saveToDo" class="ga-btn ga-btn-primary">保存</button>
                             </div>
                         </div>
                     </template>
@@ -1294,10 +1533,10 @@
                                 <div class="px-3 py-2 text-xs font-semibold text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
                                     <span class="truncate">{{ selectedSop || '未选择' }}</span>
                                     <div class="flex items-center gap-2">
-                                        <button v-if="selectedSop && !sopEditMode" @click="startEditSop" class="text-xs px-2 py-1 rounded bg-gray-200 text-gray-800 hover:bg-gray-300">编辑</button>
-                                        <button v-if="selectedSop && sopEditMode" @click="saveSop" class="text-xs px-2 py-1 rounded bg-gray-200 text-gray-800 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-100 transition-colors">保存</button>
-                                        <button v-if="selectedSop && sopEditMode" @click="cancelEditSop" class="text-xs px-2 py-1 rounded bg-gray-200 hover:bg-gray-300 text-gray-800 dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-100 transition-colors">取消</button>
-                                        <button v-if="selectedSop && !sopEditMode" @click="reloadSop" class="text-xs px-2 py-1 rounded bg-gray-200 hover:bg-gray-300 text-gray-800 dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-100 transition-colors">刷新</button>
+                                        <button v-if="selectedSop && !sopEditMode" @click="startEditSop" class="ga-btn ga-btn-xs ga-btn-secondary">编辑</button>
+                                        <button v-if="selectedSop && sopEditMode" @click="saveSop" class="ga-btn ga-btn-xs ga-btn-primary">保存</button>
+                                        <button v-if="selectedSop && sopEditMode" @click="cancelEditSop" class="ga-btn ga-btn-xs ga-btn-secondary">取消</button>
+                                        <button v-if="selectedSop && !sopEditMode" @click="reloadSop" class="ga-btn ga-btn-xs ga-btn-secondary">刷新</button>
                                     </div>
                                 </div>
                                 <div class="p-3 max-h-[55vh] overflow-auto">
@@ -1322,10 +1561,11 @@
                                 <div class="flex items-center gap-2">
                                     <span class="text-sm text-gray-700 dark:text-gray-200">间隔</span>
                                     <select v-model="status.scheduler_interval" @change="setSchedulerInterval" class="bg-transparent border border-gray-300 dark:border-gray-700 rounded px-2 py-1 text-sm focus:outline-none">
-                                        <option :value="30">30s</option>
                                         <option :value="60">60s</option>
                                         <option :value="300">300s</option>
                                         <option :value="600">600s</option>
+                                        <option :value="1800">1800s</option>
+                                        <option :value="3600">3600s</option>
                                     </select>
                                 </div>
                             </div>
@@ -1334,7 +1574,7 @@
                                 <div class="md:col-span-1 border border-gray-200 dark:border-gray-700 rounded-md overflow-hidden">
                                     <div class="px-3 py-2 text-xs font-semibold text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
                                         <span>任务</span>
-                                        <button @click="newScheduleTask" class="text-xs px-2 py-1 rounded bg-gray-200 text-gray-800 hover:bg-gray-300">新建</button>
+                                        <button @click="newScheduleTask" class="ga-btn ga-btn-xs ga-btn-secondary">新建</button>
                                     </div>
                                     <div class="max-h-[55vh] overflow-auto">
                                         <div class="px-3 py-2 text-xs font-semibold text-gray-400">pending</div>
@@ -1349,9 +1589,9 @@
                                     <div class="px-3 py-2 text-xs font-semibold text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
                                         <span class="truncate">{{ selectedScheduleBucket ? (selectedScheduleBucket + '/' + selectedScheduleName) : '未选择' }}</span>
                                         <div class="flex items-center gap-2">
-                                            <button v-if="selectedScheduleBucket" @click="saveSchedule" class="text-xs px-2 py-1 rounded bg-gray-200 text-gray-800 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-100 transition-colors">保存</button>
-                                            <button v-if="selectedScheduleBucket" @click="deleteSchedule" class="text-xs px-2 py-1 rounded bg-gray-200 text-gray-800 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-100 transition-colors">删除</button>
-                                            <button @click="refreshScheduleList" class="text-xs px-2 py-1 rounded bg-gray-200 hover:bg-gray-300 text-gray-800 dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-100 transition-colors">刷新</button>
+                                            <button v-if="selectedScheduleBucket" @click="saveSchedule" class="ga-btn ga-btn-xs ga-btn-primary">保存</button>
+                                            <button v-if="selectedScheduleBucket" @click="deleteSchedule" class="ga-btn ga-btn-xs ga-btn-danger">删除</button>
+                                            <button @click="refreshScheduleList" class="ga-btn ga-btn-xs ga-btn-secondary">刷新</button>
                                         </div>
                                     </div>
                                     <div class="p-3 space-y-2">
@@ -1377,8 +1617,8 @@
                                     按会话管理历史；恢复后会回到主对话页，并继续该 session 的上下文
                                 </div>
                                 <div class="flex items-center gap-2">
-                                    <button v-if="selectedHistorySessionId" @click="restoreHistorySession()" class="text-xs px-2 py-1 rounded bg-gray-200 text-gray-800 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-100 transition-colors">恢复到对话</button>
-                                    <button @click="refreshHistoryData" class="text-xs px-2 py-1 rounded bg-gray-200 text-gray-800 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-100 transition-colors">刷新</button>
+                                    <button v-if="selectedHistorySessionId" @click="restoreHistorySession()" class="ga-btn ga-btn-xs ga-btn-primary">恢复到对话</button>
+                                    <button @click="refreshHistoryData" class="ga-btn ga-btn-xs ga-btn-secondary">刷新</button>
                                 </div>
                             </div>
                             <div v-if="historyNotice" class="text-sm text-green-700 dark:text-green-400">{{ historyNotice }}</div>
@@ -1403,7 +1643,7 @@
                                 <div class="md:col-span-2 border border-gray-200 dark:border-gray-700 rounded-md overflow-hidden">
                                     <div class="px-3 py-2 text-xs font-semibold text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
                                         <span class="truncate">{{ (selectedHistorySession && selectedHistorySession.title) || '完整对话上下文' }}</span>
-                                        <button v-if="historyMessageView.length" @click="copyToClipboard(historyMessageView.map(m => '[' + m.role + '] ' + m.content).join('\n\n'))" class="text-xs px-2 py-1 rounded bg-gray-200 text-gray-800 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-100 transition-colors">复制全文</button>
+                                        <button v-if="historyMessageView.length" @click="copyToClipboard(historyMessageView.map(m => '[' + m.role + '] ' + m.content).join('\n\n'))" class="ga-btn ga-btn-xs ga-btn-secondary">复制全文</button>
                                     </div>
                                     <div class="p-3 max-h-[55vh] overflow-auto">
                                         <div v-if="selectedHistorySession && selectedHistorySession.summary" class="mb-3 rounded-md border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-3 text-sm text-gray-600 dark:text-gray-300">
@@ -1434,8 +1674,8 @@
                                     <div class="text-xs text-gray-500 dark:text-gray-400 mt-1 truncate">{{ backupRoot || '备份目录加载中...' }}</div>
                                 </div>
                                 <div class="flex items-center gap-2 shrink-0">
-                                    <button @click="fetchBackups" class="text-xs px-2 py-1 rounded bg-gray-200 text-gray-800 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-100 transition-colors">刷新</button>
-                                    <button @click="createBackup" :disabled="backupCreating" :class="backupCreating ? 'opacity-60 cursor-not-allowed' : ''" class="text-xs px-3 py-1.5 rounded bg-cyan-500 hover:bg-cyan-400 text-white shadow-sm transition-colors">立即备份</button>
+                                    <button @click="fetchBackups" class="ga-btn ga-btn-xs ga-btn-secondary">刷新</button>
+                                    <button @click="createBackup" :disabled="backupCreating" class="ga-btn ga-btn-xs ga-btn-primary">立即备份</button>
                                 </div>
                             </div>
                             <div v-if="backupError" class="text-sm text-red-600 dark:text-red-400">{{ backupError }}</div>
@@ -1469,12 +1709,13 @@
                             <div class="flex items-center justify-between gap-4 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-4">
                                 <div class="min-w-0">
                                     <div class="text-sm font-medium text-gray-800 dark:text-gray-100">桌宠显示</div>
-                                    <div class="text-xs text-gray-500 dark:text-gray-400 mt-1">保存后会写入本机配置，当前运行中的桌宠约 1 秒内自动应用。</div>
+                                    <div class="text-xs text-gray-500 dark:text-gray-400 mt-1">保存后会写入本机配置，当前运行中的桌宠会在约 1 秒内自动应用。</div>
                                 </div>
-                                <label class="relative inline-flex h-7 w-12 shrink-0 cursor-pointer items-center">
-                                    <input v-model="petConfig.enabled" type="checkbox" class="peer sr-only" />
-                                    <span class="absolute inset-0 rounded-full bg-gray-300 transition-colors duration-200 peer-checked:bg-emerald-500"></span>
-                                    <span class="absolute left-0.5 h-6 w-6 rounded-full bg-white shadow transition-transform duration-200 peer-checked:translate-x-5"></span>
+                                <label class="ga-pet-switch" :title="petConfig.enabled ? '关闭桌宠显示' : '打开桌宠显示'">
+                                    <input v-model="petConfig.enabled" type="checkbox" aria-label="桌宠显示" @change="savePetConfig" />
+                                    <span class="ga-pet-switch-track">
+                                        <span class="ga-pet-switch-thumb"></span>
+                                    </span>
                                 </label>
                             </div>
 
@@ -1488,22 +1729,25 @@
                                         <div class="text-sm font-medium text-gray-800 dark:text-gray-100">桌宠形象</div>
                                         <div class="text-xs text-gray-500 dark:text-gray-400 mt-1">选择一个皮肤并保存，运行中的桌宠会自动切换。</div>
                                     </div>
-                                    <button @click="fetchPetSkins" class="text-xs px-2 py-1 rounded bg-gray-200 text-gray-800 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-100 transition-colors">刷新</button>
+                                    <button @click="fetchPetSkins" class="ga-btn ga-btn-xs ga-btn-secondary">刷新</button>
                                 </div>
                                 <div class="space-y-2 max-h-72 overflow-auto pr-1">
-                                    <button v-for="skin in petSkins" :key="skin.name" @click="selectPetSkin(skin.name)" class="w-full text-left rounded-lg border px-3 py-2 transition-colors"
+                                    <div v-for="skin in petSkins" :key="skin.name" class="ga-pet-skin-card"
                                         :class="petConfig.skin_name === skin.name ? 'border-cyan-500 bg-cyan-50 dark:bg-cyan-900/20' : 'border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-900'">
                                         <div class="flex items-center justify-between gap-3">
                                             <div class="min-w-0">
                                                 <div class="text-sm font-medium text-gray-800 dark:text-gray-100 truncate">{{ skin.label }}</div>
                                                 <div class="text-xs text-gray-500 dark:text-gray-400 truncate">{{ skin.description || skin.name }}</div>
                                             </div>
-                                            <div class="text-xs px-2 py-1 rounded-full border"
-                                                :class="petConfig.skin_name === skin.name ? 'border-cyan-500 text-cyan-700 dark:text-cyan-300' : 'border-gray-300 text-gray-500 dark:text-gray-400'">
-                                                {{ petConfig.skin_name === skin.name ? '已选中' : '选择' }}
+                                            <div class="ga-pet-skin-actions">
+                                                <button @click.stop="selectPetSkin(skin.name)" class="ga-pet-skin-pill"
+                                                    :class="petConfig.skin_name === skin.name ? 'border-cyan-500 text-cyan-700 dark:text-cyan-300' : 'border-gray-300 text-gray-500 dark:text-gray-400'">
+                                                    {{ petConfig.skin_name === skin.name ? '已选中' : '选择' }}
+                                                </button>
+                                                <button @click.stop="deletePetSkin(skin.name)" :disabled="skin.name === 'legacy-pet' || petSaving" class="ga-pet-skin-delete" :title="skin.name === 'legacy-pet' ? '内置桌宠不能删除' : '删除这个桌宠形象'">删除</button>
                                             </div>
                                         </div>
-                                    </button>
+                                    </div>
                                 </div>
                             </div>
 
@@ -1536,8 +1780,8 @@
                             <div class="flex items-center justify-between gap-3">
                                 <div class="min-w-0 text-xs text-gray-400 truncate">{{ petConfigPath || '配置文件尚未创建' }}</div>
                                 <div class="flex items-center gap-2">
-                                    <button @click="resetPetConfig" :disabled="petSaving" class="px-3 py-2 text-sm rounded-md bg-gray-200 text-gray-800 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-100 transition-colors">恢复默认</button>
-                                    <button @click="savePetConfig" :disabled="petSaving" :class="petSaving ? 'opacity-60 cursor-not-allowed' : ''" class="px-3 py-2 text-sm rounded-md bg-cyan-500 hover:bg-cyan-400 text-white shadow-sm transition-colors">保存并应用</button>
+                                    <button @click="resetPetConfig" :disabled="petSaving" class="ga-btn ga-btn-secondary">恢复默认</button>
+                                    <button @click="savePetConfig" :disabled="petSaving" class="ga-btn ga-btn-primary">保存并应用</button>
                                 </div>
                             </div>
                         </div>
@@ -1549,7 +1793,7 @@
                                 <div class="text-sm text-gray-600 dark:text-gray-300">
                                     读取 `memory/` 目录下的完整文件内容
                                 </div>
-                                <button @click="refreshMemoryList" class="text-xs px-2 py-1 rounded bg-gray-200 text-gray-800 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-100 transition-colors">刷新</button>
+                                <button @click="refreshMemoryList" class="ga-btn ga-btn-xs ga-btn-secondary">刷新</button>
                             </div>
                             <div v-if="memoryError" class="text-sm text-red-600 dark:text-red-400">{{ memoryError }}</div>
                             <div v-if="memoryLoading" class="text-sm text-gray-500 dark:text-gray-400">加载中...</div>
@@ -1567,7 +1811,7 @@
                                 <div class="md:col-span-2 border border-gray-200 dark:border-gray-700 rounded-md overflow-hidden">
                                     <div class="px-3 py-2 text-xs font-semibold text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
                                         <span class="truncate">{{ selectedMemoryFile || memoryRoot || '未选择文件' }}</span>
-                                        <button v-if="memoryContent" @click="copyToClipboard(memoryContent)" class="text-xs px-2 py-1 rounded bg-gray-200 text-gray-800 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-100 transition-colors">复制原文</button>
+                                        <button v-if="memoryContent" @click="copyToClipboard(memoryContent)" class="ga-btn ga-btn-xs ga-btn-secondary">复制原文</button>
                                     </div>
                                     <div class="p-3 max-h-[55vh] overflow-auto">
                                         <div v-if="memoryContent">

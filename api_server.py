@@ -964,6 +964,7 @@ _MODE_BOILERPLATE_PREFIXES = (
     "@watch 请以监察者模式运行：检查当前 workspace、ToDo、计划任务和潜在问题，必要时提醒我确认。",
     "@sop 请先匹配最相关的 SOP，再严格按 SOP 步骤执行并说明使用了哪个 SOP。",
     "@review 请进入审查模式：优先列出缺陷、风险、回归点和缺失验证，不要先做泛泛总结。",
+    "@goal 请进入目标模式：先明确最终目标、成功标准和当前约束，再持续围绕目标推进；必要时主动拆解子目标、更新进展并提醒我关键决策。",
 )
 
 _GENERIC_TITLE_TEXTS = {
@@ -993,9 +994,9 @@ def _clean_title_candidate(text):
         if text.startswith(prefix):
             text = text[len(prefix):].strip()
             break
-    text = re.sub(r"^@(plan|watch|watcher|sop|review)\s*", "", text, flags=re.I).strip()
-    text = re.sub(r"^(请)?(进入计划模式|以监察者模式运行|先匹配最相关的\s*SOP|进入审查模式)[：:，,\s]*", "", text, flags=re.I).strip()
-    text = re.sub(r"^(先把目标拆成可执行步骤|检查当前 workspace、ToDo、计划任务和潜在问题|严格按 SOP 步骤执行|优先列出缺陷、风险、回归点和缺失验证).*", "", text, flags=re.I).strip()
+    text = re.sub(r"^@(plan|watch|watcher|sop|review|goal)\s*", "", text, flags=re.I).strip()
+    text = re.sub(r"^(请)?(进入计划模式|以监察者模式运行|先匹配最相关的\s*SOP|进入审查模式|进入目标模式)[：:，,\s]*", "", text, flags=re.I).strip()
+    text = re.sub(r"^(先把目标拆成可执行步骤|检查当前 workspace、ToDo、计划任务和潜在问题|严格按 SOP 步骤执行|优先列出缺陷、风险、回归点和缺失验证|先明确最终目标、成功标准和当前约束).*", "", text, flags=re.I).strip()
     text = re.sub(r"^(帮我|请你|麻烦你|能不能|可以帮我)\s*", "", text).strip()
     text = re.sub(r"^关于当前", "", text).strip()
     text = re.sub(r"\s+", " ", text).strip(" ，,。；;：:")
@@ -1476,7 +1477,7 @@ class AppState:
         self.human_question = ""
         self.human_candidates = []
         self.scheduler_enabled = False
-        self.scheduler_interval = 30
+        self.scheduler_interval = 60
         self.run_lock = threading.Lock()
         self.active_runs = {}
         self.ui_state = "idle"
@@ -2432,7 +2433,7 @@ def _desktop_pet_skin_list():
     result = [{
         "name": "legacy-pet",
         "label": "默认桌宠",
-        "description": "当前 bundled pet.gif 桌宠",
+        "description": "当前内置 pet.gif 桌宠",
         "style": "legacy",
         "preview_url": "/api/desktop_pet/skin_preview?name=legacy-pet",
     }]
@@ -2502,6 +2503,29 @@ def _desktop_pet_skin_preview_path(name):
         return None
 
 
+def _delete_desktop_pet_skin(name):
+    safe_name = os.path.basename(str(name or ""))
+    if not safe_name or safe_name == "legacy-pet":
+        return False, "内置桌宠不能删除"
+    skin_dir = os.path.abspath(os.path.join(_desktop_pet_skins_dir(), safe_name))
+    skins_root = os.path.abspath(_desktop_pet_skins_dir())
+    if not (skin_dir == skins_root or skin_dir.startswith(skins_root + os.sep)):
+        return False, "无效的桌宠名称"
+    if not os.path.isdir(skin_dir):
+        return False, "桌宠形象不存在"
+    skin_json = os.path.join(skin_dir, "skin.json")
+    if not os.path.isfile(skin_json):
+        return False, "不是可删除的桌宠皮肤目录"
+    _create_user_backup_safe("before-delete-desktop-pet-skin")
+    shutil.rmtree(skin_dir)
+
+    cfg = _read_desktop_pet_config()
+    if cfg.get("skin_name") == safe_name:
+        cfg["skin_name"] = DESKTOP_PET_DEFAULT_CONFIG["skin_name"]
+        cfg = _write_desktop_pet_config(cfg)
+    return True, cfg
+
+
 @app.get("/api/desktop_pet/config")
 def get_desktop_pet_config():
     return {
@@ -2524,6 +2548,19 @@ async def save_desktop_pet_config(request: Request):
 @app.get("/api/desktop_pet/skins")
 def get_desktop_pet_skins():
     return {
+        "skins": _desktop_pet_skin_list(),
+    }
+
+
+@app.post("/api/desktop_pet/skins/delete")
+async def delete_desktop_pet_skin(request: Request):
+    data = await request.json()
+    ok, result = _delete_desktop_pet_skin(data.get("name") if isinstance(data, dict) else "")
+    if not ok:
+        return JSONResponse(status_code=400, content={"error": result})
+    return {
+        "status": "deleted",
+        "config": result,
         "skins": _desktop_pet_skin_list(),
     }
 

@@ -113,6 +113,13 @@ createApp({
                 title: 'Review 模式',
                 desc: '优先找问题、风险和缺测试',
                 prompt: '@review 请进入审查模式：优先列出缺陷、风险、回归点和缺失验证，不要先做泛泛总结。'
+            },
+            {
+                id: 'goal',
+                label: '@goal',
+                title: 'Goal 模式',
+                desc: '围绕明确目标持续推进',
+                prompt: '@goal 请进入目标模式：先明确最终目标、成功标准和当前约束，再持续围绕目标推进；必要时主动拆解子目标、更新进展并提醒我关键决策。'
             }
         ];
 
@@ -341,9 +348,7 @@ createApp({
             
             // Handle window resize for sidebar
             window.addEventListener('resize', () => {
-                if (window.innerWidth > 768) {
-                    sidebarOpen.value = true;
-                } else {
+                if (window.innerWidth <= 768) {
                     sidebarOpen.value = false;
                 }
             });
@@ -905,9 +910,9 @@ createApp({
         };
 
         const applyModeCommand = (mode) => {
-            if (!mode || !mode.prompt) return;
+            if (!mode || !mode.label) return;
             const current = inputMessage.value.trim();
-            inputMessage.value = current ? `${mode.prompt}\n\n${current}` : mode.prompt;
+            inputMessage.value = current ? `${mode.label} ${current}` : mode.label;
             nextTick(() => {
                 const textarea = document.querySelector('textarea');
                 if (textarea) {
@@ -1572,6 +1577,33 @@ createApp({
             await savePetConfig();
         };
 
+        const deletePetSkin = async (name) => {
+            if (!name || name === 'legacy-pet') return;
+            if (!confirm(`确定删除桌宠形象「${name}」吗？此操作会删除对应皮肤文件。`)) return;
+            petSaving.value = true;
+            petError.value = '';
+            petNotice.value = '';
+            try {
+                const res = await fetch('/api/desktop_pet/skins/delete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name })
+                });
+                if (!res.ok) {
+                    const data = await res.json().catch(() => ({}));
+                    throw new Error(data.error || `HTTP ${res.status}`);
+                }
+                const data = await res.json();
+                if (data.config) petConfig.value = { ...petConfig.value, ...data.config };
+                petSkins.value = Array.isArray(data.skins) ? data.skins : petSkins.value.filter(skin => skin.name !== name);
+                petNotice.value = '已删除桌宠形象并刷新配置';
+            } catch (e) {
+                petError.value = String(e && e.message ? e.message : e);
+            } finally {
+                petSaving.value = false;
+            }
+        };
+
         const resetPetConfig = async () => {
             petConfig.value = {
                 enabled: true,
@@ -1988,6 +2020,7 @@ createApp({
             fetchPetSkins,
             savePetConfig,
             selectPetSkin,
+            deletePetSkin,
             resetPetConfig,
             copyToClipboard,
             switchLLM,

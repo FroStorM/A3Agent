@@ -1,12 +1,52 @@
 import atexit
+import json
 import os
 import socket
+import subprocess
 import sys
 import threading
 import time
 import urllib.request
 import webbrowser
 from pathlib import Path
+
+
+def run_child_python_if_requested():
+    if os.environ.get("A3AGENT_CHILD_PYTHON") != "1":
+        return
+    import runpy
+
+    args = list(sys.argv[1:])
+    script = None
+    rest = []
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg == "-X" and i + 1 < len(args):
+            i += 2
+            continue
+        if arg == "-u":
+            i += 1
+            continue
+        if arg.startswith("-"):
+            i += 1
+            continue
+        script = arg
+        rest = args[i + 1:]
+        break
+    if not script:
+        raise SystemExit("A3AGENT_CHILD_PYTHON requires a script path")
+    sys.argv = [script] + rest
+    try:
+        sys.stdout = open(os.devnull, "w", encoding="utf-8", errors="replace")
+        sys.stderr = open(os.devnull, "w", encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+    runpy.run_path(script, run_name="__main__")
+    raise SystemExit(0)
+
+
+run_child_python_if_requested()
 
 LOCAL_DEPS_DIR = Path(__file__).resolve().parent / ".pydeps"
 if LOCAL_DEPS_DIR.is_dir() and str(LOCAL_DEPS_DIR) not in sys.path:
@@ -20,9 +60,10 @@ except Exception:
     webview = None
 
 try:
-    from path_utils import app_data_dir
+    from path_utils import app_data_dir, resource_path
 except Exception:
     app_data_dir = None
+    resource_path = None
 
 try:
     from path_utils import resource_dir
@@ -42,6 +83,21 @@ else:
     _default_log_file = BASE_DIR / "launch-windows.log"
 LOG_FILE = Path(os.environ.get("GA_LOG_FILE") or str(_default_log_file))
 WINDOW_TITLE = APP_NAME
+PET_PROCESS_REF = None
+LAST_PET_CONFIG = None
+PET_MONITOR_STOP = threading.Event()
+
+DESKTOP_PET_DEFAULT_CONFIG = {
+    "enabled": True,
+    "size": 104,
+    "position": "right-bottom",
+    "x": None,
+    "y": None,
+    "skin_name": "legacy-pet",
+    "always_on_top": True,
+    "show_shadow": False,
+    "click_action": "toggle_main",
+}
 
 
 def log(message):
@@ -96,6 +152,180 @@ def start_server():
         log(f"server: failed: {e}")
 
 
+def desktop_pet_config_path():
+    try:
+        if app_data_dir is not None:
+            return Path(app_data_dir()) / "desktop_pet.json"
+    except Exception:
+        pass
+    return Path(os.environ.get("GA_APP_DATA_DIR") or str(BASE_DIR)) / "desktop_pet.json"
+
+
+def sanitize_desktop_pet_config(data):
+    if not isinstance(data, dict):
+        data = {}
+    cfg = dict(DESKTOP_PET_DEFAULT_CONFIG)
+    cfg.update({k: data.get(k) for k in cfg.keys() if k in data})
+    cfg["enabled"] = bool(cfg.get("enabled"))
+    cfg["always_on_top"] = bool(cfg.get("always_on_top"))
+    cfg["show_shadow"] = bool(cfg.get("show_shadow"))
+    try:
+        cfg["size"] = int(cfg.get("size", DESKTOP_PET_DEFAULT_CONFIG["size"]))
+    except Exception:
+        cfg["size"] = DESKTOP_PET_DEFAULT_CONFIG["size"]
+    cfg["size"] = max(48, min(220, cfg["size"]))
+    if cfg.get("position") not in {"right-bottom", "right-top", "left-bottom", "left-top", "center", "custom"}:
+        cfg["position"] = DESKTOP_PET_DEFAULT_CONFIG["position"]
+    for key in ("x", "y"):
+        value = cfg.get(key)
+        if value is None or value == "":
+            cfg[key] = None
+            continue
+        try:
+            cfg[key] = float(value)
+        except Exception:
+            cfg[key] = None
+    if cfg.get("click_action") not in {"toggle_main", "none"}:
+        cfg["click_action"] = DESKTOP_PET_DEFAULT_CONFIG["click_action"]
+    cfg["skin_name"] = str(cfg.get("skin_name") or DESKTOP_PET_DEFAULT_CONFIG["skin_name"])
+    return cfg
+
+
+def load_desktop_pet_config():
+    try:
+        path = desktop_pet_config_path()
+        if path.exists():
+            with path.open("r", encoding="utf-8") as f:
+                return sanitize_desktop_pet_config(json.load(f))
+    except Exception as e:
+        log(f"desktop_pet: load config failed: {e}")
+    return dict(DESKTOP_PET_DEFAULT_CONFIG)
+
+
+def desktop_pet_script_path():
+    candidates = []
+    if resource_path is not None:
+        try:
+            candidates.append(Path(resource_path("frontends", "desktop_pet_v2.pyw")))
+        except Exception:
+            pass
+        try:
+            candidates.append(Path(resource_path("frontends", "desktop_pet.pyw")))
+        except Exception:
+            pass
+    candidates.extend([
+        BASE_DIR / "frontends" / "desktop_pet_v2.pyw",
+        BASE_DIR / "frontends" / "desktop_pet.pyw",
+    ])
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def terminate_pet_process():
+    global PET_PROCESS_REF
+    proc = PET_PROCESS_REF
+    PET_PROCESS_REF = None
+    if proc is None:
+        return
+    try:
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+    except Exception as e:
+        log(f"desktop_pet: terminate failed: {e}")
+
+
+def start_pet_process(cfg):
+    global PET_PROCESS_REF
+    script = desktop_pet_script_path()
+    if script is None:
+        log("desktop_pet: script not found")
+        return
+    cmd = [
+        sys.executable,
+        "-u",
+        str(script),
+        "--skin",
+        str(cfg.get("skin_name") or "legacy-pet"),
+        "--size",
+        str(cfg.get("size") or DESKTOP_PET_DEFAULT_CONFIG["size"]),
+        "--position",
+        str(cfg.get("position") or DESKTOP_PET_DEFAULT_CONFIG["position"]),
+        "--always-on-top",
+        "1" if cfg.get("always_on_top") else "0",
+        "--show-shadow",
+        "1" if cfg.get("show_shadow") else "0",
+    ]
+    if cfg.get("x") is not None:
+        cmd.extend(["--x", str(cfg["x"])])
+    if cfg.get("y") is not None:
+        cmd.extend(["--y", str(cfg["y"])])
+
+    env = os.environ.copy()
+    if getattr(sys, "frozen", False) or Path(sys.executable).stem.lower() == "a3agent":
+        env["A3AGENT_CHILD_PYTHON"] = "1"
+    env["GA_BASE_DIR"] = str(BASE_DIR)
+    env["PYTHONUNBUFFERED"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
+
+    startupinfo = None
+    if os.name == "nt":
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = 0
+
+    PET_PROCESS_REF = subprocess.Popen(
+        cmd,
+        cwd=str(BASE_DIR),
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        startupinfo=startupinfo,
+    )
+    log(f"desktop_pet: started pid={PET_PROCESS_REF.pid} cfg={cfg}")
+
+
+def apply_desktop_pet_config(cfg):
+    global LAST_PET_CONFIG
+    cfg = sanitize_desktop_pet_config(cfg)
+    proc_alive = PET_PROCESS_REF is not None and PET_PROCESS_REF.poll() is None
+
+    if not cfg.get("enabled"):
+        if proc_alive:
+            terminate_pet_process()
+            log("desktop_pet: disabled")
+        LAST_PET_CONFIG = dict(cfg)
+        return
+
+    restart_keys = ("skin_name", "size", "position", "x", "y", "always_on_top", "show_shadow")
+    needs_restart = (
+        not proc_alive
+        or LAST_PET_CONFIG is None
+        or any(cfg.get(k) != LAST_PET_CONFIG.get(k) for k in restart_keys)
+    )
+    LAST_PET_CONFIG = dict(cfg)
+    if not needs_restart:
+        return
+    if proc_alive:
+        terminate_pet_process()
+    start_pet_process(cfg)
+
+
+def desktop_pet_monitor():
+    while not PET_MONITOR_STOP.is_set():
+        try:
+            apply_desktop_pet_config(load_desktop_pet_config())
+        except Exception as e:
+            log(f"desktop_pet: monitor failed: {e}")
+        PET_MONITOR_STOP.wait(1.0)
+
+
 def open_browser_fallback():
     log(f"launcher: opening system browser {URL}")
     webbrowser.open(URL)
@@ -117,8 +347,12 @@ def open_browser_fallback():
 
 def create_window():
     if webview is None:
-        open_browser_fallback()
-        return
+        try:
+            open_browser_fallback()
+            return
+        finally:
+            PET_MONITOR_STOP.set()
+            terminate_pet_process()
 
     window = webview.create_window(
         WINDOW_TITLE,
@@ -128,7 +362,11 @@ def create_window():
         text_select=True,
         resizable=True,
     )
-    webview.start()
+    try:
+        webview.start()
+    finally:
+        PET_MONITOR_STOP.set()
+        terminate_pet_process()
     return window
 
 
@@ -141,6 +379,10 @@ def main():
         message = f"Local server failed to start. Check log: {LOG_FILE}"
         log(message)
         raise SystemExit(message)
+
+    pet_thread = threading.Thread(target=desktop_pet_monitor, daemon=True)
+    pet_thread.start()
+    atexit.register(terminate_pet_process)
 
     create_window()
 
