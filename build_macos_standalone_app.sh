@@ -2,7 +2,7 @@
 set -euo pipefail
 
 APP_NAME="A3Agent"
-VERSION_NAME="${1:-standalone-20260508}"
+VERSION_NAME="${1:-macos-$(date +%Y%m%d)}"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DIST_DIR="${ROOT_DIR}/dist"

@@ -1,0 +1,11 @@
+pyinstaller
+fastapi
+uvicorn
+bottle
+simple-websocket-server
+beautifulsoup4
+pyobjc-core
+pyobjc-framework-Cocoa
+pyobjc-framework-WebKit
+pillow
+requests
