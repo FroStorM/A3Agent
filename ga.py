@@ -9,11 +9,108 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from agent_loop import BaseHandler, StepOutcome, json_default
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
+def iter_runtime_dep_dirs():
+    dep_dirs = []
+    seen = set()
+
+    def add_dep(path):
+        if not path:
+            return
+        try:
+            dep_path = Path(path).resolve()
+        except Exception:
+            return
+        key = str(dep_path)
+        if key in seen:
+            return
+        seen.add(key)
+        dep_dirs.append(dep_path)
+
+    explicit_dep_dir = os.environ.get("GA_PYDEPS_DIR")
+    add_dep(explicit_dep_dir)
+
+    roots = []
+    root_seen = set()
+
+    def add_root(path):
+        if not path:
+            return
+        try:
+            root = Path(path).resolve()
+        except Exception:
+            return
+        key = str(root)
+        if key in root_seen:
+            return
+        root_seen.add(key)
+        roots.append(root)
+
+    add_root(os.environ.get("GA_BASE_DIR"))
+    add_root(script_dir)
+    try:
+        add_root(Path(sys.executable).resolve().parent)
+    except Exception:
+        pass
+    add_root(os.environ.get("GA_APP_DATA_DIR"))
+    if os.name == "nt":
+        app_name = os.environ.get("GA_APP_NAME") or "A3Agent"
+        add_root(Path(os.environ.get("APPDATA") or (Path.home() / "AppData" / "Roaming")) / app_name)
+
+    for root in roots:
+        add_dep(root / ".pydeps")
+        add_dep(root / "_internal" / ".pydeps")
+    return dep_dirs
+
+
+def preferred_runtime_dep_dir():
+    candidates = []
+    explicit_dep_dir = os.environ.get("GA_PYDEPS_DIR")
+    if explicit_dep_dir:
+        candidates.append(Path(explicit_dep_dir))
+    app_data_dir = os.environ.get("GA_APP_DATA_DIR")
+    if app_data_dir:
+        candidates.append(Path(app_data_dir) / ".pydeps")
+    if os.name == "nt":
+        app_name = os.environ.get("GA_APP_NAME") or "A3Agent"
+        candidates.append(Path(os.environ.get("APPDATA") or (Path.home() / "AppData" / "Roaming")) / app_name / ".pydeps")
+    candidates.append(Path(script_dir) / ".pydeps")
+
+    for candidate in candidates:
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+            return candidate.resolve()
+        except Exception:
+            continue
+    return None
+
+
 def python_subprocess_env():
     env = os.environ.copy()
     exe_name = os.path.basename(sys.executable).lower()
     if getattr(sys, "frozen", False) or exe_name == "a3agent":
         env["A3AGENT_CHILD_PYTHON"] = "1"
+    dep_dirs = [str(path) for path in iter_runtime_dep_dirs() if path.is_dir()]
+    preferred_dep_dir = preferred_runtime_dep_dir()
+    if preferred_dep_dir is not None:
+        preferred_dep_dir = str(preferred_dep_dir)
+        env["GA_PYDEPS_DIR"] = preferred_dep_dir
+        if preferred_dep_dir not in dep_dirs:
+            dep_dirs.insert(0, preferred_dep_dir)
+        env.setdefault("PIP_TARGET", preferred_dep_dir)
+        env.setdefault("PIP_DISABLE_PIP_VERSION_CHECK", "1")
+        env.setdefault("PIP_NO_WARN_SCRIPT_LOCATION", "1")
+    existing_pythonpath = env.get("PYTHONPATH", "").strip()
+    if existing_pythonpath:
+        dep_dirs.extend([p for p in existing_pythonpath.split(os.pathsep) if p])
+    if dep_dirs:
+        deduped = []
+        seen = set()
+        for path in dep_dirs:
+            if path in seen:
+                continue
+            seen.add(path)
+            deduped.append(path)
+        env["PYTHONPATH"] = os.pathsep.join(deduped)
     return env
 
 def code_run(code, code_type="python", timeout=60, cwd=None, code_cwd=None, stop_signal=[]):
@@ -56,10 +153,11 @@ def code_run(code, code_type="python", timeout=60, cwd=None, code_cwd=None, stop
         except: pass
 
     try:
+        proc_env = python_subprocess_env()
         process = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             bufsize=0, cwd=cwd, startupinfo=startupinfo,
-            env=python_subprocess_env() if code_type in ["python", "py"] else None
+            env=proc_env
         )
         start_t = time.time()
         t = threading.Thread(target=stream_reader, args=(process, full_stdout), daemon=True)

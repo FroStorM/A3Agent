@@ -11,6 +11,7 @@ $StandaloneDir = Join-Path $DistDir "windows"
 $IconPng = Join-Path $RootDir "frontend\\app_icon_round.png"
 $IconIco = Join-Path $DistDir "A3Agent-windows.ico"
 $LocalDepsDir = Join-Path $RootDir ".pydeps"
+$DistLocalDepsDir = Join-Path $StandaloneDir "A3Agent\\.pydeps"
 
 New-Item -ItemType Directory -Force -Path $DistDir, $WorkDir, $StandaloneDir | Out-Null
 
@@ -62,6 +63,13 @@ python -m PyInstaller `
   --hidden-import "reflect.autonomous" `
   --hidden-import "reflect.scheduler" `
   launch_windows.py
+
+if (Test-Path $DistLocalDepsDir) {
+    Remove-Item -LiteralPath $DistLocalDepsDir -Recurse -Force
+}
+if (Test-Path $LocalDepsDir) {
+    Copy-Item -LiteralPath $LocalDepsDir -Destination $DistLocalDepsDir -Recurse
+}
 
 $ZipPath = Join-Path $DistDir ("A3Agent-" + $VersionName + "-windows.zip")
 if (Test-Path $ZipPath) {

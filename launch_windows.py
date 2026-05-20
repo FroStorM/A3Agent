@@ -2,6 +2,7 @@ import atexit
 import json
 import os
 import socket
+import site
 import subprocess
 import sys
 import threading
@@ -11,12 +12,113 @@ import webbrowser
 from pathlib import Path
 
 
+def iter_local_deps_dirs():
+    roots = []
+    seen = set()
+    dep_dirs = []
+    dep_seen = set()
+
+    def add_root(path):
+        if not path:
+            return
+        try:
+            root = Path(path).resolve()
+        except Exception:
+            return
+        key = str(root)
+        if key in seen:
+            return
+        seen.add(key)
+        roots.append(root)
+
+    def add_dep(path):
+        if not path:
+            return
+        try:
+            dep_path = Path(path).resolve()
+        except Exception:
+            return
+        key = str(dep_path)
+        if key in dep_seen:
+            return
+        dep_seen.add(key)
+        dep_dirs.append(dep_path)
+
+    add_dep(os.environ.get("GA_PYDEPS_DIR"))
+    add_root(os.environ.get("GA_BASE_DIR"))
+    add_root(Path(__file__).resolve().parent)
+    try:
+        add_root(Path(sys.executable).resolve().parent)
+    except Exception:
+        pass
+    add_root(os.environ.get("GA_APP_DATA_DIR"))
+    if os.name == "nt":
+        app_name = os.environ.get("GA_APP_NAME") or "A3Agent"
+        add_root(Path(os.environ.get("APPDATA") or (Path.home() / "AppData" / "Roaming")) / app_name)
+
+    for root in roots:
+        add_dep(root / ".pydeps")
+        add_dep(root / "_internal" / ".pydeps")
+    return dep_dirs
+
+
+def preferred_local_deps_dir():
+    for dep_dir in iter_local_deps_dirs():
+        try:
+            dep_dir.mkdir(parents=True, exist_ok=True)
+            return dep_dir
+        except Exception:
+            continue
+    return None
+
+
+def add_python_path(path):
+    try:
+        path = Path(path).resolve()
+    except Exception:
+        return
+    try:
+        is_dir = path.is_dir()
+    except Exception:
+        return
+    if not is_dir:
+        return
+    path_str = str(path)
+    if path_str in sys.path:
+        return
+    try:
+        site.addsitedir(path_str)
+    except Exception:
+        sys.path.insert(0, path_str)
+
+
+def bootstrap_python_paths():
+    preferred_dep_dir = preferred_local_deps_dir()
+    if preferred_dep_dir is not None:
+        os.environ.setdefault("GA_PYDEPS_DIR", str(preferred_dep_dir))
+        os.environ.setdefault("PIP_TARGET", str(preferred_dep_dir))
+        os.environ.setdefault("PIP_DISABLE_PIP_VERSION_CHECK", "1")
+        os.environ.setdefault("PIP_NO_WARN_SCRIPT_LOCATION", "1")
+    for dep_dir in iter_local_deps_dirs():
+        add_python_path(dep_dir)
+    try:
+        user_sites = site.getusersitepackages()
+    except Exception:
+        user_sites = []
+    if isinstance(user_sites, str):
+        user_sites = [user_sites]
+    for user_site in user_sites:
+        add_python_path(user_site)
+
+
 def run_child_python_if_requested():
     if os.environ.get("A3AGENT_CHILD_PYTHON") != "1":
         return
     import runpy
 
     args = list(sys.argv[1:])
+    module = None
+    code = None
     script = None
     rest = []
     i = 0
@@ -28,29 +130,44 @@ def run_child_python_if_requested():
         if arg == "-u":
             i += 1
             continue
+        if arg == "-m" and i + 1 < len(args):
+            module = args[i + 1]
+            rest = args[i + 2:]
+            break
+        if arg == "-c" and i + 1 < len(args):
+            code = args[i + 1]
+            rest = args[i + 2:]
+            break
         if arg.startswith("-"):
             i += 1
             continue
         script = arg
         rest = args[i + 1:]
         break
-    if not script:
-        raise SystemExit("A3AGENT_CHILD_PYTHON requires a script path")
-    sys.argv = [script] + rest
+    if not any((module, code, script)):
+        raise SystemExit("A3AGENT_CHILD_PYTHON requires a script, module, or code string")
     try:
         sys.stdout = open(os.devnull, "w", encoding="utf-8", errors="replace")
         sys.stderr = open(os.devnull, "w", encoding="utf-8", errors="replace")
     except Exception:
         pass
-    runpy.run_path(script, run_name="__main__")
+    if module:
+        sys.argv = [module] + rest
+        runpy.run_module(module, run_name="__main__", alter_sys=True)
+    elif code is not None:
+        sys.argv = ["-c"] + rest
+        globs = {"__name__": "__main__", "__file__": "<string>"}
+        exec(compile(code, "<string>", "exec"), globs, globs)
+    else:
+        sys.argv = [script] + rest
+        runpy.run_path(script, run_name="__main__")
     raise SystemExit(0)
 
 
+bootstrap_python_paths()
 run_child_python_if_requested()
 
-LOCAL_DEPS_DIR = Path(__file__).resolve().parent / ".pydeps"
-if LOCAL_DEPS_DIR.is_dir() and str(LOCAL_DEPS_DIR) not in sys.path:
-    sys.path.insert(0, str(LOCAL_DEPS_DIR))
+LOCAL_DEPS_DIR = next((path for path in iter_local_deps_dirs() if path.is_dir()), None)
 
 import uvicorn
 
@@ -77,10 +194,17 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 APP_NAME = "A3Agent"
+os.environ.setdefault("GA_APP_NAME", APP_NAME)
 if app_data_dir is not None:
     _default_log_file = Path(app_data_dir()) / "launch-windows.log"
 else:
     _default_log_file = BASE_DIR / "launch-windows.log"
+os.environ.setdefault("GA_BASE_DIR", str(BASE_DIR))
+if app_data_dir is not None:
+    try:
+        os.environ.setdefault("GA_APP_DATA_DIR", str(app_data_dir()))
+    except Exception:
+        pass
 LOG_FILE = Path(os.environ.get("GA_LOG_FILE") or str(_default_log_file))
 WINDOW_TITLE = APP_NAME
 PET_PROCESS_REF = None
