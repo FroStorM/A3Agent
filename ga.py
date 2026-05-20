@@ -89,6 +89,7 @@ def python_subprocess_env():
     exe_name = os.path.basename(sys.executable).lower()
     if getattr(sys, "frozen", False) or exe_name == "a3agent":
         env["A3AGENT_CHILD_PYTHON"] = "1"
+        env["A3AGENT_CHILD_CAPTURE"] = "1"
     dep_dirs = [str(path) for path in iter_runtime_dep_dirs() if path.is_dir()]
     preferred_dep_dir = preferred_runtime_dep_dir()
     if preferred_dep_dir is not None:

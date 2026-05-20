@@ -116,6 +116,7 @@ def run_child_python_if_requested():
         return
     import runpy
 
+    capture_output = os.environ.get("A3AGENT_CHILD_CAPTURE") == "1"
     args = list(sys.argv[1:])
     module = None
     code = None
@@ -146,21 +147,38 @@ def run_child_python_if_requested():
         break
     if not any((module, code, script)):
         raise SystemExit("A3AGENT_CHILD_PYTHON requires a script, module, or code string")
+    if not capture_output:
+        try:
+            sys.stdout = open(os.devnull, "w", encoding="utf-8", errors="replace")
+            sys.stderr = open(os.devnull, "w", encoding="utf-8", errors="replace")
+        except Exception:
+            pass
     try:
-        sys.stdout = open(os.devnull, "w", encoding="utf-8", errors="replace")
-        sys.stderr = open(os.devnull, "w", encoding="utf-8", errors="replace")
+        if module:
+            sys.argv = [module] + rest
+            runpy.run_module(module, run_name="__main__", alter_sys=True)
+        elif code is not None:
+            sys.argv = ["-c"] + rest
+            globs = {"__name__": "__main__", "__file__": "<string>"}
+            exec(compile(code, "<string>", "exec"), globs, globs)
+        else:
+            sys.argv = [script] + rest
+            runpy.run_path(script, run_name="__main__")
     except Exception:
-        pass
-    if module:
-        sys.argv = [module] + rest
-        runpy.run_module(module, run_name="__main__", alter_sys=True)
-    elif code is not None:
-        sys.argv = ["-c"] + rest
-        globs = {"__name__": "__main__", "__file__": "<string>"}
-        exec(compile(code, "<string>", "exec"), globs, globs)
-    else:
-        sys.argv = [script] + rest
-        runpy.run_path(script, run_name="__main__")
+        try:
+            import traceback
+
+            traceback.print_exc()
+
+            fallback_log = Path(os.environ.get("GA_LOG_FILE") or (Path.cwd() / "launch-windows.log"))
+            fallback_log.parent.mkdir(parents=True, exist_ok=True)
+            with fallback_log.open("a", encoding="utf-8") as f:
+                f.write("[child-python-error]\n")
+                traceback.print_exc(file=f)
+                f.write("\n")
+        except Exception:
+            pass
+        raise SystemExit(1)
     raise SystemExit(0)
 
 
