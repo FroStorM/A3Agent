@@ -1,10 +1,10 @@
 # A3Agent
 
-A3Agent 是基于 GenericAgent 改造的本地桌面 Agent 应用。当前工程的目标不是继续维护原始 Streamlit 前端，而是提供一套前后端分离、可桌面打包、可长期替换后端能力的本地智能体工作台。
+A3Agent 是基于 GenericAgent 改造的本地桌面 Agent 应用。当前工程的目标不是继续维护原始 Streamlit 前端，而是提供一套前后端分离、可桌面打包、可长期替换后端能力的本地智能体工作台(release目录可以直接下载极简版本客户端)。
 
 这个版本的重点是：
 
-- 前端固定为 `frontend/` 下的 Web UI，负责聊天、模型配置、SOP、历史会话、记忆文件、数据备份和桌宠配置。
+- 前端固定为 `frontend/` 下的 Web UI，负责聊天、模型配置、SOP、历史会话、记忆文件、数据备份和桌宠配置等功能。
 - 后端由 `api_server.py` 暴露 REST API 与 SSE 流式输出，核心执行仍由 `agentmain.py`、`agent_loop.py`、`ga.py`、`llmcore.py` 驱动。
 - 桌面应用由 `launch_app.py` 启动本地后端，并用 macOS 原生 WebKit 打开窗口，不依赖用户浏览器。
 - 数据、配置、SOP、历史和桌宠设置写入用户目录，应用包内文件只作为默认模板，避免每次升级覆盖用户工作结果。
