@@ -232,6 +232,149 @@
             flex: 1;
             overflow: auto;
         }
+        .goal-mode-overlay {
+            position: fixed;
+            inset: 0;
+            z-index: 60;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 16px;
+        }
+        .goal-mode-backdrop {
+            position: absolute;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.55);
+        }
+        .goal-mode-dialog {
+            position: relative;
+            width: min(340px, calc(100vw - 40px));
+            max-width: 340px;
+            border: 1px solid #ef4444;
+            border-radius: 10px;
+            background: var(--bg-primary);
+            box-shadow: 0 18px 42px rgba(15, 23, 42, 0.22);
+            overflow: hidden;
+        }
+        .goal-mode-dialog-body {
+            display: flex;
+            gap: 10px;
+            padding: 14px;
+        }
+        .goal-mode-dialog-bar {
+            flex: 0 0 auto;
+            width: 5px;
+            border-radius: 999px;
+            background: #dc2626;
+        }
+        .goal-mode-dialog-content {
+            min-width: 0;
+            flex: 1;
+        }
+        .goal-mode-dialog-title {
+            color: var(--text-primary);
+            font-size: 15px;
+            font-weight: 700;
+            line-height: 1.35;
+        }
+        .goal-mode-dialog-text {
+            margin-top: 6px;
+            color: var(--text-secondary);
+            font-size: 13px;
+            line-height: 1.5;
+        }
+        .goal-mode-dialog-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 8px;
+            margin-top: 12px;
+        }
+        .ga-input-wrap {
+            position: relative;
+            display: flex;
+            align-items: center;
+        }
+        .ga-chat-input {
+            padding-right: 3.5rem !important;
+        }
+        .ga-token-card {
+            margin-top: 10px;
+            padding: 8px 9px;
+            border: 1px solid rgba(103, 232, 249, 0.55);
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.7);
+        }
+        .ga-token-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+        }
+        .ga-token-title {
+            color: #0e7490;
+            font-size: 12px;
+            font-weight: 700;
+            line-height: 1.2;
+        }
+        .ga-token-total {
+            color: var(--text-primary);
+            font-size: 12px;
+            font-weight: 800;
+            line-height: 1.2;
+            white-space: nowrap;
+        }
+        .ga-token-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 4px 6px;
+            margin-top: 6px;
+            color: var(--text-secondary);
+            font-size: 10px;
+            line-height: 1.25;
+        }
+        .ga-token-row {
+            display: flex;
+            min-width: 0;
+            align-items: center;
+            justify-content: space-between;
+            gap: 4px;
+            padding: 2px 5px;
+            border-radius: 6px;
+            background: rgba(8, 145, 178, 0.06);
+        }
+        .ga-token-row span:first-child {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .ga-token-row span:last-child {
+            color: var(--text-primary);
+            font-weight: 700;
+            white-space: nowrap;
+        }
+        .ga-token-empty {
+            margin-top: 4px;
+            color: rgba(148, 163, 184, 0.9);
+            font-size: 10px;
+            line-height: 1.3;
+        }
+        html.dark .ga-token-card {
+            border-color: rgba(21, 94, 117, 0.85);
+            background: rgba(17, 24, 39, 0.35);
+        }
+        html.dark .ga-token-title {
+            color: #67e8f9;
+        }
+        html.dark .ga-token-row {
+            background: rgba(8, 145, 178, 0.12);
+        }
+        .ga-send-button {
+            position: absolute;
+            top: 50%;
+            right: 8px;
+            transform: translateY(-50%);
+            z-index: 2;
+        }
         .ga-todo-textarea {
             width: 100%;
             height: 55vh;
@@ -1220,6 +1363,21 @@
                             <span class="w-2 h-2 rounded-full transition-colors duration-300" :class="status.is_running ? 'bg-green-500 animate-pulse' : 'bg-gray-400'"></span>
                             <span class="text-xs text-gray-500 dark:text-gray-400">{{ status.is_running ? '运行中' : '空闲' }}</span>
                         </div>
+                        <div class="ga-token-card">
+                            <div class="ga-token-header">
+                                <span class="ga-token-title">消耗统计</span>
+                                <span class="ga-token-total">{{ tokenUsageLabel }}</span>
+                            </div>
+                            <div v-if="tokenUsage" class="ga-token-grid">
+                                <div class="ga-token-row"><span>请求</span><span>{{ tokenUsage.requests || 0 }}</span></div>
+                                <div class="ga-token-row"><span>上下文</span><span>{{ tokenContextPercent }}%</span></div>
+                                <div class="ga-token-row"><span>输入</span><span>{{ formatTokenCount(tokenUsage.input || 0) }}</span></div>
+                                <div class="ga-token-row"><span>输出</span><span>{{ formatTokenCount(tokenUsage.output || 0) }}</span></div>
+                                <div class="ga-token-row"><span>缓存写</span><span>{{ formatTokenCount(tokenUsage.cache_create || 0) }}</span></div>
+                                <div class="ga-token-row"><span>缓存读</span><span>{{ formatTokenCount(tokenUsage.cache_read || 0) }}</span></div>
+                            </div>
+                            <div v-else class="ga-token-empty">等待首次 LLM 调用</div>
+                        </div>
                     </div>
                     
                     <div class="pt-2 border-t border-blue-200 dark:border-blue-800 space-y-2">
@@ -1281,13 +1439,13 @@
                             <i data-lucide="archive" class="w-4 h-4"></i>
                             数据备份
                         </button>
+                        <button @click="openModal('communication')" class="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-md transition-colors">
+                            <i data-lucide="messages-square" class="w-4 h-4"></i>
+                            通信工具
+                        </button>
                         <button @click="openModal('pet')" class="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-md transition-colors">
                             <i data-lucide="cat" class="w-4 h-4"></i>
                             桌面宠物
-                        </button>
-                        <button @click="reloadAgent" class="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-md transition-colors">
-                            <i data-lucide="refresh-cw" class="w-4 h-4"></i>
-                            重载配置/模型
                         </button>
                         <!-- Workspace 切换功能已禁用 -->
                     </div>
@@ -1297,10 +1455,6 @@
                     <button @click="triggerAutonomous" v-if="status.autonomous_enabled" class="w-full flex items-center gap-2 px-3 py-2 text-sm text-purple-600 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-900/20 rounded-md transition-colors">
                         <i data-lucide="zap" class="w-4 h-4"></i>
                         立即触发自主行动
-                    </button>
-                     <button @click="injectSysPrompt" class="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-md transition-colors">
-                        <i data-lucide="refresh-cw" class="w-4 h-4"></i>
-                        重新注入Prompt
                     </button>
                     <button @click="stopTask" class="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-md transition-colors">
                         <i data-lucide="square" class="w-4 h-4"></i>
@@ -1394,25 +1548,48 @@
             <!-- Input Area -->
             <div class="p-4 bg-white dark:bg-gray-800 border-t border-gray-200 dark:border-gray-700 shrink-0">
                 <div class="max-w-4xl mx-auto">
-                    <div class="mb-2 flex flex-wrap gap-2">
-                        <button v-for="mode in modeCommands" :key="mode.id" @click="applyModeCommand(mode)" :title="mode.desc" class="text-xs px-2.5 py-1 rounded-full border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 hover:bg-blue-50 dark:hover:bg-blue-900/30 text-gray-600 dark:text-gray-300 hover:text-blue-700 dark:hover:text-blue-200 transition-colors">
-                            {{ mode.label }} {{ mode.title }}
+                    <div class="mb-2 flex items-start justify-between gap-2">
+                        <div class="flex min-w-0 flex-1 flex-wrap gap-2">
+                            <button v-for="mode in modeCommands" :key="mode.id" @click="applyModeCommand(mode)" :title="mode.desc" class="text-xs px-2.5 py-1 rounded-full border transition-colors" :class="selectedModeIds.includes(mode.id) ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/40 text-blue-700 dark:text-blue-200' : 'border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 hover:bg-blue-50 dark:hover:bg-blue-900/30 text-gray-600 dark:text-gray-300 hover:text-blue-700 dark:hover:text-blue-200'">
+                                {{ mode.label }} {{ mode.title }}
+                            </button>
+                            <span v-if="selectedModeCommands.length" class="text-xs px-2.5 py-1 text-gray-500 dark:text-gray-400">
+                                当前：{{ selectedModeCommands.map(mode => mode.title).join(' + ') }}
+                            </span>
+                        </div>
+                        <button
+                            @click="openIntervention"
+                            :disabled="interventionSaving"
+                            title="不停止当前任务，将提示排队到下一轮入口"
+                            class="shrink-0 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60"
+                            :class="interventionOpen ? 'border-blue-600 bg-blue-600 text-white shadow-sm' : 'border-blue-200 bg-blue-50 text-blue-700 hover:border-blue-300 hover:bg-blue-100 dark:border-blue-800 dark:bg-blue-950/40 dark:text-blue-200 dark:hover:bg-blue-900/50'"
+                        >
+                            引导当前任务
                         </button>
                     </div>
-                    <div class="relative flex items-center">
+                    <div v-if="interventionOpen" class="mb-2 rounded-xl border border-blue-200 bg-blue-50/80 p-2 dark:border-blue-800 dark:bg-blue-950/30">
+                        <div class="flex items-start gap-2">
+                            <textarea id="ga-intervention-input" v-model="interventionText" @keydown.enter.exact.prevent="submitIntervention" class="min-h-10 flex-1 resize-none rounded-lg border border-blue-200 bg-white px-3 py-2 text-sm text-gray-800 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500/50 dark:border-blue-800 dark:bg-gray-900 dark:text-gray-100" rows="1" placeholder="插入引导提示，例如：刚才方向错了，请优先检查前端布局。"></textarea>
+                            <button @click="submitIntervention" :disabled="!interventionText.trim() || interventionSaving" class="shrink-0 rounded-lg bg-blue-600 px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50">{{ interventionSaving ? '插入中' : '插入' }}</button>
+                            <button @click="closeIntervention" :disabled="interventionSaving" class="shrink-0 rounded-lg border border-blue-200 bg-white px-3 py-2 text-xs text-blue-700 transition-colors hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-blue-800 dark:bg-gray-900 dark:text-blue-200">取消</button>
+                        </div>
+                        <div v-if="interventionNotice" class="mt-1 text-xs text-green-600 dark:text-green-400">{{ interventionNotice }}</div>
+                        <div v-if="interventionError" class="mt-1 text-xs text-red-600 dark:text-red-400">{{ interventionError }}</div>
+                    </div>
+                    <div class="ga-input-wrap">
                         <textarea 
                             v-model="inputMessage" 
                             @keydown="handleInputKeydown"
                             @compositionstart="handleCompositionStart"
                             @compositionend="handleCompositionEnd"
                             placeholder="输入指令..." 
-                            class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl px-4 py-3 pr-14 focus:outline-none focus:ring-2 focus:ring-blue-500/50 resize-none h-14 max-h-48 transition-all scrollbar-hide text-sm sm:text-base"
+                            class="ga-chat-input w-full bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500/50 resize-none h-14 max-h-48 transition-all scrollbar-hide text-sm sm:text-base"
                             rows="1"
                         ></textarea>
                         <button 
                             @click="sendMessage" 
                             :disabled="!inputMessage.trim() || isTyping"
-                            class="absolute right-2 top-1/2 -translate-y-1/2 p-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm"
+                            class="ga-send-button p-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm"
                         >
                             <i data-lucide="send" class="w-4 h-4"></i>
                         </button>
@@ -1437,6 +1614,7 @@
                         <template v-else-if="activeModal === 'history'">历史对话</template>
                         <template v-else-if="activeModal === 'memory'">记忆文件</template>
                         <template v-else-if="activeModal === 'backup'">数据备份</template>
+                        <template v-else-if="activeModal === 'communication'">通信工具</template>
                         <template v-else-if="activeModal === 'pet'">桌面宠物</template>
                     </div>
                     <button @click="closeModal" class="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-500 dark:text-gray-300">
@@ -1617,9 +1795,14 @@
                                     按会话管理历史；恢复后会回到主对话页，并继续该 session 的上下文
                                 </div>
                                 <div class="flex items-center gap-2">
+                                    <button v-if="selectedHistorySessionId" @click="exportHistorySession()" class="ga-btn ga-btn-xs ga-btn-secondary">导出 Markdown</button>
                                     <button v-if="selectedHistorySessionId" @click="restoreHistorySession()" class="ga-btn ga-btn-xs ga-btn-primary">恢复到对话</button>
                                     <button @click="refreshHistoryData" class="ga-btn ga-btn-xs ga-btn-secondary">刷新</button>
                                 </div>
+                            </div>
+                            <div v-if="selectedHistorySessionId" class="flex items-center gap-2">
+                                <input v-model="historyTitleDraft" class="flex-1 bg-transparent border border-gray-300 dark:border-gray-700 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="会话名称"/>
+                                <button @click="renameHistorySession" :disabled="historySavingTitle" class="ga-btn ga-btn-sm ga-btn-secondary">{{ historySavingTitle ? '保存中...' : '保存名称' }}</button>
                             </div>
                             <div v-if="historyNotice" class="text-sm text-green-700 dark:text-green-400">{{ historyNotice }}</div>
                             <div v-if="historyError" class="text-sm text-red-600 dark:text-red-400">{{ historyError }}</div>
@@ -1699,6 +1882,75 @@
                                         <div class="col-span-2 text-gray-600 dark:text-gray-300">{{ item.files }}</div>
                                         <div class="col-span-2 text-gray-600 dark:text-gray-300">{{ formatBackupSize(item.size) }}</div>
                                     </div>
+                                </div>
+                            </div>
+                        </div>
+                    </template>
+
+                    <template v-else-if="activeModal === 'communication'">
+                        <div class="space-y-4">
+                            <div class="flex items-center justify-between gap-3">
+                                <div class="min-w-0">
+                                    <div class="text-sm text-gray-700 dark:text-gray-200">管理飞书、企业微信、QQ、钉钉等通信前端的配置与启停。</div>
+                                    <div class="text-xs text-gray-500 dark:text-gray-400 mt-1 truncate">{{ communicationPath || '配置文件加载中...' }}</div>
+                                </div>
+                                <button @click="fetchCommunicationConfigs" class="ga-btn ga-btn-xs ga-btn-secondary">刷新</button>
+                            </div>
+
+                            <div v-if="communicationError" class="text-sm text-red-600 dark:text-red-400">{{ communicationError }}</div>
+                            <div v-if="communicationNotice" class="text-sm text-green-700 dark:text-green-400">{{ communicationNotice }}</div>
+                            <div v-if="communicationLoading" class="text-sm text-gray-500 dark:text-gray-400">加载中...</div>
+
+                            <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                <div class="md:col-span-1 border border-gray-200 dark:border-gray-700 rounded-md overflow-hidden">
+                                    <div class="px-3 py-2 text-xs font-semibold text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700">工具列表</div>
+                                    <div class="max-h-[55vh] overflow-auto">
+                                        <div v-if="!communicationTools.length" class="px-3 py-3 text-sm text-gray-500 dark:text-gray-400">暂无通信工具</div>
+                                        <button v-for="tool in communicationTools" :key="tool.id" @click="selectCommunicationTool(tool.id)" class="w-full text-left px-3 py-3 text-sm hover:bg-gray-100 dark:hover:bg-gray-700 border-b border-gray-100 dark:border-gray-800" :class="selectedCommunicationId === tool.id ? 'bg-blue-50 dark:bg-blue-900/20' : ''">
+                                            <div class="flex items-center justify-between gap-2">
+                                                <span class="font-medium truncate">{{ tool.label }}</span>
+                                                <span class="text-[11px] px-2 py-0.5 rounded-full" :class="communicationStatusClass(tool.status)">{{ communicationStatusText(tool.status) }}</span>
+                                            </div>
+                                            <div class="text-xs text-gray-400 mt-1 truncate">{{ tool.name || tool.id }}</div>
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <div class="md:col-span-2 border border-gray-200 dark:border-gray-700 rounded-md overflow-hidden">
+                                    <div class="px-3 py-2 text-xs font-semibold text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700">
+                                        {{ selectedCommunicationTool ? (selectedCommunicationTool.label + ' 配置') : '请选择一个通信工具' }}
+                                    </div>
+                                    <div v-if="selectedCommunicationTool" class="p-4 space-y-4 max-h-[55vh] overflow-auto">
+                                        <div class="text-xs text-gray-500 dark:text-gray-400">
+                                            当前状态：
+                                            <span class="ml-2 inline-flex px-2 py-0.5 rounded-full" :class="communicationStatusClass(selectedCommunicationTool.status)">
+                                                {{ communicationStatusText(selectedCommunicationTool.status) }}
+                                            </span>
+                                        </div>
+
+                                        <div>
+                                            <div class="text-xs text-gray-500 dark:text-gray-400 mb-1">App / Bot ID</div>
+                                            <input v-model="communicationDraft(selectedCommunicationTool).app_id" type="text" class="w-full bg-transparent text-gray-800 dark:text-gray-100 border border-gray-300 dark:border-gray-700 rounded px-3 py-2 text-sm focus:outline-none" />
+                                        </div>
+
+                                        <div>
+                                            <div class="text-xs text-gray-500 dark:text-gray-400 mb-1">Secret</div>
+                                            <input v-model="communicationDraft(selectedCommunicationTool).secret" type="password" placeholder="留空表示保持现有 secret 不变" class="w-full bg-transparent text-gray-800 dark:text-gray-100 border border-gray-300 dark:border-gray-700 rounded px-3 py-2 text-sm focus:outline-none" />
+                                        </div>
+
+                                        <div>
+                                            <div class="text-xs text-gray-500 dark:text-gray-400 mb-1">允许用户</div>
+                                            <textarea v-model="communicationDraft(selectedCommunicationTool).allowed_users" rows="6" placeholder="每行一个用户 ID，留空表示允许全部" class="w-full bg-transparent text-gray-800 dark:text-gray-100 border border-gray-300 dark:border-gray-700 rounded px-3 py-2 text-sm focus:outline-none resize-y"></textarea>
+                                        </div>
+
+                                        <div class="flex flex-wrap items-center gap-2">
+                                            <button @click="saveCommunicationConfig(selectedCommunicationTool)" :disabled="communicationSaving || communicationBusyId === selectedCommunicationTool.id" class="ga-btn ga-btn-primary">保存配置</button>
+                                            <button @click="runCommunicationAction(selectedCommunicationTool, 'test')" :disabled="communicationBusyId === selectedCommunicationTool.id" class="ga-btn ga-btn-secondary">刷新状态</button>
+                                            <button @click="runCommunicationAction(selectedCommunicationTool, 'start')" :disabled="communicationBusyId === selectedCommunicationTool.id" class="ga-btn ga-btn-secondary">启动</button>
+                                            <button @click="runCommunicationAction(selectedCommunicationTool, 'stop')" :disabled="communicationBusyId === selectedCommunicationTool.id" class="ga-btn ga-btn-danger">停止</button>
+                                        </div>
+                                    </div>
+                                    <div v-else class="p-4 text-sm text-gray-500 dark:text-gray-400">请选择左侧通信工具进行配置。</div>
                                 </div>
                             </div>
                         </div>
@@ -1827,6 +2079,25 @@
                 </div>
             </div>
         </div>
+
+        <div v-if="pendingGoalMode" class="goal-mode-overlay">
+            <div class="goal-mode-backdrop" @click="cancelGoalMode"></div>
+            <div class="goal-mode-dialog">
+                <div class="goal-mode-dialog-body">
+                    <div class="goal-mode-dialog-bar"></div>
+                    <div class="goal-mode-dialog-content">
+                        <div class="goal-mode-dialog-title">确认进入 Goal 狂暴模式</div>
+                        <p class="goal-mode-dialog-text">
+                            GA 将不计代价完成任务，可能带来大量 Token 消耗，直到耗尽为止。
+                        </p>
+                        <div class="goal-mode-dialog-actions">
+                            <button @click="cancelGoalMode" class="ga-btn ga-btn-xs ga-btn-secondary">取消</button>
+                            <button @click="confirmGoalMode" class="ga-btn ga-btn-xs ga-btn-primary bg-red-600 hover:bg-red-700 border-red-600">确认</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
         
         <!-- Overlay for mobile sidebar -->
         <div v-if="sidebarOpen" @click="sidebarOpen = false" class="md:hidden fixed inset-0 bg-black/50 z-10"></div>
@@ -1875,6 +2146,6 @@
         }
     </script>
     <script src="vendor/marked.umd.js"></script>
-    <script src="app.js?v=15"></script>
+    <script src="app.js?v=21"></script>
 </body>
 </html>

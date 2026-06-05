@@ -1,16 +1,27 @@
-import glob, json, os, queue as Q, re, sys, threading, time
+import argparse, glob, json, os, queue as Q, re, sys, threading, time
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 os.chdir(PROJECT_ROOT)
-from agentmain import GeneraticAgent
-from frontends.chatapp_common import format_restore
-from frontends.continue_cmd import handle_frontend_command as handle_continue_frontend, reset_conversation
-from llmcore import mykeys
+from path_utils import workspace_root_dir, workspace_config_dir, resolve_mykey_path
 
 import traceback
 import lark_oapi as lark
 from lark_oapi.api.im.v1 import *
+
+
+def _ensure_runtime_paths():
+    workspace_root = workspace_root_dir()
+    config_root = workspace_config_dir(workspace_root)
+    os.environ.setdefault("GA_WORKSPACE_ROOT", str(workspace_root))
+    os.environ.setdefault("GA_USER_DATA_DIR", str(config_root))
+    return str(workspace_root), str(config_root)
+
+
+_ensure_runtime_paths()
+from agentmain import GeneraticAgent
+from frontends.chatapp_common import format_restore
+from frontends.continue_cmd import handle_frontend_command as handle_continue_frontend, reset_conversation
 
 _TAG_PATS = [r"<" + t + r">.*?</" + t + r">" for t in ("thinking", "summary", "tool_use", "file_content")]
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".ico", ".tiff", ".tif"}
@@ -229,19 +240,97 @@ def _extract_post_content(content_json):
     return "", []
 
 
-APP_ID = str(mykeys.get("fs_app_id", "") or "").strip()
-APP_SECRET = str(mykeys.get("fs_app_secret", "") or "").strip()
-ALLOWED_USERS = _to_allowed_set(mykeys.get("fs_allowed_users", []))
-PUBLIC_ACCESS = not ALLOWED_USERS or "*" in ALLOWED_USERS
 AGENT_TIMEOUT_SEC = 900
 
-agent = GeneraticAgent()
-threading.Thread(target=agent.run, daemon=True).start()
+agent = None
+agent_error = None
+agent_thread = None
 client, user_tasks = None, {}
+
+
+def _load_config():
+    path = resolve_mykey_path(os.environ.get("GA_WORKSPACE_ROOT"), prefer_existing=True)
+    if not path or not os.path.exists(path):
+        return {}, str(path or "")
+    try:
+        if str(path).endswith(".py"):
+            import importlib.util
+            import uuid
+            mod_name = f"_fs_mykey_{uuid.uuid4().hex}"
+            spec = importlib.util.spec_from_file_location(mod_name, path)
+            if not spec or not spec.loader:
+                return {}, str(path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            data = {k: v for k, v in vars(module).items() if not k.startswith("_")}
+        else:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        return data if isinstance(data, dict) else {}, str(path)
+    except Exception as e:
+        print(f"[ERROR] load mykey failed {path}: {e}")
+        return {}, str(path)
+
+
+def _feishu_config():
+    cfg, path = _load_config()
+    app_id = str(cfg.get("fs_app_id", "") or "").strip()
+    app_secret = str(cfg.get("fs_app_secret", "") or "").strip()
+    allowed = _to_allowed_set(cfg.get("fs_allowed_users", []))
+    return app_id, app_secret, allowed, (not allowed or "*" in allowed), path
+
+
+APP_ID, APP_SECRET, ALLOWED_USERS, PUBLIC_ACCESS, CONFIG_PATH = _feishu_config()
+
+
+def get_agent():
+    global agent, agent_error, agent_thread
+    if agent is not None:
+        return agent
+    if agent_error:
+        raise RuntimeError(agent_error)
+    try:
+        agent = GeneraticAgent()
+        agent_thread = threading.Thread(target=agent.run, daemon=True)
+        agent_thread.start()
+        return agent
+    except Exception as e:
+        agent_error = str(e)
+        raise
 
 
 def create_client():
     return lark.Client.builder().app_id(APP_ID).app_secret(APP_SECRET).log_level(lark.LogLevel.INFO).build()
+
+
+def _mask_secret(value):
+    value = str(value or "")
+    if len(value) <= 8:
+        return "*" * len(value)
+    return value[:4] + "*" * (len(value) - 8) + value[-4:]
+
+
+def check_config(init_agent=False):
+    app_id, app_secret, allowed, public_access, path = _feishu_config()
+    result = {
+        "config_path": path,
+        "app_id": app_id,
+        "app_secret": _mask_secret(app_secret),
+        "app_secret_present": bool(app_secret),
+        "public_access": public_access,
+        "allowed_users": sorted(allowed),
+        "ready": bool(app_id and app_secret),
+    }
+    if init_agent:
+        try:
+            ga = get_agent()
+            result["agent_ready"] = True
+            result["llm_count"] = len(ga.list_llms()) if hasattr(ga, "list_llms") else 0
+            result["current_llm"] = ga.get_llm_name() if getattr(ga, "llmclient", None) else ""
+        except Exception as e:
+            result["agent_ready"] = False
+            result["agent_error"] = str(e)
+    return result
 
 
 def _card_raw(elements):
@@ -565,25 +654,29 @@ def handle_message(data):
         card = _TaskCard(receive_id, rid_type)
         card.start()
         on_final = lambda raw: _send_generated_files(receive_id, raw, receive_id_type=rid_type)
-        if not hasattr(agent, '_turn_end_hooks'): agent._turn_end_hooks = {}
-        agent._turn_end_hooks[hook_key] = _make_task_hook(card, done_event, on_final)
+        ga = None
         try:
-            agent.put_task(user_input, source="feishu", images=image_paths)
+            ga = get_agent()
+            if not hasattr(ga, '_turn_end_hooks'):
+                ga._turn_end_hooks = {}
+            ga._turn_end_hooks[hook_key] = _make_task_hook(card, done_event, on_final)
+            ga.put_task(user_input, source="feishu", images=image_paths)
             start = time.time()
             while not done_event.wait(timeout=3):
                 if not user_tasks.get(open_id, {}).get("running", True):
-                    agent.abort()
+                    ga.abort()
                     card.fail("已停止")
                     break
                 if time.time() - start > AGENT_TIMEOUT_SEC:
-                    agent.abort()
+                    ga.abort()
                     card.fail("任务超时")
                     break
         except Exception as e:
             traceback.print_exc()
             card.fail(f"错误: {e}")
         finally:
-            agent._turn_end_hooks.pop(hook_key, None)
+            if ga is not None:
+                ga._turn_end_hooks.pop(hook_key, None)
             user_tasks.pop(open_id, None)
 
     threading.Thread(target=run_agent, daemon=True).start()
@@ -600,54 +693,71 @@ def handle_command(open_id, cmd, chat_id=None):
     if op == "/stop":
         if open_id in user_tasks:
             user_tasks[open_id]["running"] = False
-        agent.abort()
+        try:
+            get_agent().abort()
+        except Exception:
+            pass
         _send_cmd_response("正在停止...")
     elif op == "/new":
-        _send_cmd_response(reset_conversation(agent))
+        _send_cmd_response(reset_conversation(get_agent()))
     elif op == "/help":
         _send_cmd_response("命令列表:\n/stop - 停止当前任务\n/status - 查看状态\n/llm - 查看当前模型列表\n/llm [n] - 切换到第 n 个模型\n/restore - 恢复上次对话历史\n/continue - 列出可恢复会话\n/continue [n] - 恢复第 n 个会话\n/new - 开启新对话并清空当前上下文\n/help - 显示帮助")
     elif op == "/status":
-        llm = agent.get_llm_name() if agent.llmclient else "未配置"
-        _send_cmd_response(f"状态: {'🔴 运行中' if agent.is_running else '🟢 空闲'}\nLLM: [{agent.llm_no}] {llm}")
+        try:
+            ga = get_agent()
+        except Exception as e:
+            return _send_cmd_response(f"❌ Agent 初始化失败: {e}")
+        llm = ga.get_llm_name() if ga.llmclient else "未配置"
+        _send_cmd_response(f"状态: {'🔴 运行中' if ga.is_running else '🟢 空闲'}\nLLM: [{ga.llm_no}] {llm}")
     elif op == "/llm":
-        if not agent.llmclient:
+        ga = get_agent()
+        if not ga.llmclient:
             return _send_cmd_response("❌ 当前没有可用的 LLM 配置")
         if len(parts) > 1:
             try:
-                agent.next_llm(int(parts[1]))
-                return _send_cmd_response(f"✅ 已切换到 [{agent.llm_no}] {agent.get_llm_name()}")
+                ga.next_llm(int(parts[1]))
+                return _send_cmd_response(f"✅ 已切换到 [{ga.llm_no}] {ga.get_llm_name()}")
             except Exception:
-                return _send_cmd_response(f"用法: /llm <0-{len(agent.list_llms()) - 1}>")
-        lines = [f"{'→' if cur else '  '} [{i}] {name}" for i, name, cur in agent.list_llms()]
+                return _send_cmd_response(f"用法: /llm <0-{len(ga.list_llms()) - 1}>")
+        lines = [f"{'→' if cur else '  '} [{i}] {name}" for i, name, cur in ga.list_llms()]
         _send_cmd_response("LLMs:\n" + "\n".join(lines))
     elif op == "/restore":
         try:
+            ga = get_agent()
             restored_info, err = format_restore()
             if err:
                 return _send_cmd_response(err.replace("❌ ", ""))
             restored, fname, count = restored_info
-            agent.history.extend(restored)
-            agent.abort()
+            ga.history.extend(restored)
+            ga.abort()
             _send_cmd_response(f"已恢复 {count} 轮对话\n来源: {fname}\n(仅恢复上下文，请输入新问题继续)")
         except Exception as e:
             _send_cmd_response(f"恢复失败: {e}")
     elif op == "/continue" or cmd.startswith("/continue"):
-        _send_cmd_response(handle_continue_frontend(agent, cmd))
+        _send_cmd_response(handle_continue_frontend(get_agent(), cmd))
     else:
         _send_cmd_response(f"未知命令: {cmd}")
 
 
 def main():
-    global client
+    global client, APP_ID, APP_SECRET, ALLOWED_USERS, PUBLIC_ACCESS, CONFIG_PATH
+    APP_ID, APP_SECRET, ALLOWED_USERS, PUBLIC_ACCESS, CONFIG_PATH = _feishu_config()
     if not APP_ID or not APP_SECRET:
-        print("错误: 请在 mykey.py 或 mykey.json 中配置 fs_app_id 和 fs_app_secret")
+        print(f"错误: 请在 mykey 配置中填写 fs_app_id 和 fs_app_secret\n配置文件: {CONFIG_PATH}", flush=True)
         sys.exit(1)
     client = create_client()
     handler = lark.EventDispatcherHandler.builder("", "").register_p2_im_message_receive_v1(handle_message).build()
     cli = lark.ws.Client(APP_ID, APP_SECRET, event_handler=handler, log_level=lark.LogLevel.INFO)
-    print("=" * 50 + "\n飞书 Agent 已启动（长连接模式）\n" + f"App ID: {APP_ID}\n等待消息...\n" + "=" * 50)
+    print("=" * 50 + "\n飞书 Agent 已启动（长连接模式）\n" + f"App ID: {APP_ID}\n配置: {CONFIG_PATH}\n等待消息...\n" + "=" * 50, flush=True)
     cli.start()
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="A3Agent Feishu frontend")
+    parser.add_argument("--check", action="store_true", help="只检查飞书配置，不启动长连接")
+    parser.add_argument("--check-agent", action="store_true", help="检查配置并初始化 Agent/LLM")
+    args = parser.parse_args()
+    if args.check or args.check_agent:
+        print(json.dumps(check_config(init_agent=args.check_agent), ensure_ascii=False, indent=2), flush=True)
+    else:
+        main()

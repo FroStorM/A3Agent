@@ -8,6 +8,7 @@ HELP_COMMANDS = (
     ("/restore", "恢复上次对话历史"),
     ("/continue", "列出可恢复会话"),
     ("/continue [n]", "恢复第 n 个会话"),
+    ("/review [scope]", "in-session code review; 默认审当前 git diff"),
     ("/llm", "查看当前模型列表"),
     ("/llm [n]", "切换到第 n 个模型"),
 )
@@ -18,6 +19,7 @@ TELEGRAM_MENU_COMMANDS = (
     ("new", "开启新对话并清空当前上下文"),
     ("restore", "恢复上次对话历史"),
     ("continue", "列出可恢复会话；/continue n 恢复第 n 个"),
+    ("review", "in-session code review；/review scope 指定范围"),
     ("llm", "查看模型列表；/llm n 切换到指定模型"),
 )
 
@@ -300,6 +302,8 @@ class AgentChatMixin:
             return await self.send_text(chat_id, _handle_continue_frontend(self.agent, cmd), **ctx)
         if op == "/new":
             return await self.send_text(chat_id, _reset_conversation(self.agent), **ctx)
+        if op == "/review":
+            return await self.run_agent(chat_id, cmd, **ctx)
         return await self.send_text(chat_id, HELP_TEXT, **ctx)
 
     async def run_agent(self, chat_id, text, **ctx):
@@ -334,3 +338,10 @@ class AgentChatMixin:
 from agentmain import GeneraticAgent as _GA
 from continue_cmd import handle_frontend_command as _handle_continue_frontend, install as _install_continue, reset_conversation as _reset_conversation
 _install_continue(_GA)
+from review_cmd import install as _install_review
+_install_review(_GA)
+try:
+    import cost_tracker as _cost_tracker
+    _cost_tracker.install()
+except Exception:
+    pass

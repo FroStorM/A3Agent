@@ -70,7 +70,7 @@ frontend/index.html
 
 - 聊天执行：通过 `/api/chat` 提交任务，通过 `/api/stream` 获取 SSE 流式输出。
 - 模型管理：前端支持新增、测试、保存、切换模型配置。
-- 模式入口：输入框上方提供 `@plan`、`@watch`、`@sop`、`@review` 快捷入口。
+- 模式入口：输入框上方提供 `@plan`、`@watch`、`@sop`、`@review`、`@goal` 快捷入口。
 - SOP 技能库：可查看、编辑、保存用户 SOP 文件。
 - 历史会话：按 session 记录，可以恢复到历史对话并继续上下文。
 - 记忆文件：可查看完整记忆文件。

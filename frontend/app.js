@@ -4,6 +4,8 @@ createApp({
     setup() {
         const sidebarOpen = ref(window.innerWidth > 768);
         const inputMessage = ref('');
+        const selectedModeIds = ref([]);
+        const pendingGoalMode = ref(null);
         const messages = ref([]);
         const isTyping = ref(false);
         const status = ref({ llm_name: '', is_running: false });
@@ -20,8 +22,10 @@ createApp({
         const selectedHistorySessionId = ref('');
         const selectedHistorySession = ref(null);
         const historyMessages = ref([]);
+        const historyTitleDraft = ref('');
         const historyNotice = ref('');
         const historyLoading = ref(false);
+        const historySavingTitle = ref(false);
         const historyError = ref('');
         const memoryFiles = ref([]);
         const selectedMemoryFile = ref('');
@@ -65,6 +69,20 @@ createApp({
         const keyEditorSaving = ref(false);
         const keyEditorTestOk = ref(false);
         const keyEditorTestFingerprint = ref('');
+        const communicationTools = ref([]);
+        const communicationPath = ref('');
+        const selectedCommunicationId = ref('');
+        const communicationDrafts = ref({});
+        const communicationLoading = ref(false);
+        const communicationSaving = ref(false);
+        const communicationBusyId = ref('');
+        const communicationNotice = ref('');
+        const communicationError = ref('');
+        const interventionOpen = ref(false);
+        const interventionText = ref('');
+        const interventionNotice = ref('');
+        const interventionError = ref('');
+        const interventionSaving = ref(false);
         const isComposing = ref(false);
         const renderLimit = ref(120);
         const stickToBottom = ref(true);
@@ -122,6 +140,7 @@ createApp({
                 prompt: '@goal 请进入目标模式：先明确最终目标、成功标准和当前约束，再持续围绕目标推进；必要时主动拆解子目标、更新进展并提醒我关键决策。'
             }
         ];
+        const selectedModeCommands = computed(() => modeCommands.filter((mode) => selectedModeIds.value.includes(mode.id)));
 
         const getPrefersDark = () => {
             try { return !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches); } catch (e) { return false; }
@@ -371,9 +390,16 @@ createApp({
         let lastStreamSeenAt = Date.now();
         const runStates = new Map();
         let activeStreamRuns = 0;
+        const activeRunCount = ref(0);
+        const runStateCount = ref(0);
         const streamViewMax = 60000;
         const streamTailMax = 16000;
         let scrollScheduled = false;
+
+        const syncStreamActivityState = () => {
+            activeRunCount.value = activeStreamRuns;
+            runStateCount.value = runStates.size;
+        };
 
         const escapeHtml = (input) => {
             const s = String(input ?? '');
@@ -550,7 +576,8 @@ createApp({
                     });
 
                     const updateTypingState = () => {
-                        isTyping.value = runStates.size > 0;
+                        syncStreamActivityState();
+                        isTyping.value = runStates.size > 0 || activeStreamRuns > 0;
                     };
 
                     const flushRun = (rid) => {
@@ -618,6 +645,12 @@ createApp({
                         messages.value.push(makeMessage('assistant', '', { streaming: true, run_id: runId }));
                         runStates.set(runId, { assistantIndex: messages.value.length - 1, buffer: '', flushTimer: null });
                         updateTypingState();
+                    } else if (data.type === 'system') {
+                        messages.value.push(makeMessage('assistant', data.content || '', {
+                            timestamp: data.timestamp || new Date().toLocaleTimeString(),
+                            source: data.source || 'system'
+                        }));
+                        scrollToBottom();
                     } else if (data.type === 'state') {
                         if (data.state === 'need-user') {
                             status.value.needs_human_input = true;
@@ -910,24 +943,45 @@ createApp({
         };
 
         const applyModeCommand = (mode) => {
-            if (!mode || !mode.label) return;
-            const current = inputMessage.value.trim();
-            inputMessage.value = current ? `${mode.label} ${current}` : mode.label;
+            if (!mode || !mode.id) return;
+            if (selectedModeIds.value.includes(mode.id)) {
+                selectedModeIds.value = selectedModeIds.value.filter((id) => id !== mode.id);
+            } else if (mode.id === 'goal') {
+                pendingGoalMode.value = mode;
+                return;
+            } else {
+                selectedModeIds.value = [...selectedModeIds.value, mode.id];
+            }
             nextTick(() => {
                 const textarea = document.querySelector('textarea');
                 if (textarea) {
                     textarea.focus();
-                    textarea.style.height = 'auto';
-                    textarea.style.height = Math.min(textarea.scrollHeight, 192) + 'px';
                 }
             });
+        };
+
+        const confirmGoalMode = () => {
+            const mode = pendingGoalMode.value;
+            pendingGoalMode.value = null;
+            if (mode && !selectedModeIds.value.includes(mode.id)) {
+                selectedModeIds.value = [...selectedModeIds.value, mode.id];
+            }
+            nextTick(() => {
+                const textarea = document.querySelector('textarea');
+                if (textarea) textarea.focus();
+            });
+        };
+
+        const cancelGoalMode = () => {
+            pendingGoalMode.value = null;
         };
 
         const handleInputCommand = () => {
             const raw = String(inputMessage.value || '');
             const trimmed = raw.trimStart();
             const cmd = modeCommands.find((m) => trimmed === m.label || trimmed.startsWith(m.label + ' '));
-            if (!cmd) return raw;
+            if (!cmd && !selectedModeCommands.value.length) return raw;
+            if (!cmd) return `${selectedModeCommands.value.map((mode) => mode.prompt).join('\n\n')}\n\n${raw}`;
             const rest = trimmed.slice(cmd.label.length).trim();
             return rest ? `${cmd.prompt}\n\n${rest}` : cmd.prompt;
         };
@@ -936,6 +990,12 @@ createApp({
             if (!inputMessage.value.trim() || isTyping.value) return;
 
             const prompt = handleInputCommand();
+            await submitPrompt(prompt, { clearInput: true, resetModes: true });
+        };
+
+        const submitPrompt = async (prompt, options = {}) => {
+            if (!String(prompt || '').trim() || isTyping.value) return;
+
             const requestId = (typeof crypto !== 'undefined' && crypto.randomUUID)
                 ? crypto.randomUUID()
                 : `${Date.now()}_${Math.random().toString(16).slice(2)}`;
@@ -982,7 +1042,8 @@ createApp({
                     status: response.status,
                 });
 
-                inputMessage.value = '';
+                if (options.clearInput !== false) inputMessage.value = '';
+                if (options.resetModes !== false) selectedModeIds.value = [];
                 submitInFlight.value = false;
                 currentSubmitAbortController = null;
                 isTyping.value = true;
@@ -1055,6 +1116,37 @@ createApp({
 
         const memoryFilesView = computed(() => Array.isArray(memoryFiles.value) ? memoryFiles.value : []);
 
+        const formatTokenCount = (value) => {
+            const n = Number(value) || 0;
+            if (n >= 1000000) return `${(n / 1000000).toFixed(n >= 10000000 ? 0 : 1)}M`;
+            if (n >= 1000) return `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}K`;
+            return String(n);
+        };
+
+        const tokenUsage = computed(() => {
+            const usage = status.value && status.value.token_usage;
+            return usage && usage.available ? usage : null;
+        });
+
+        const tokenUsageLabel = computed(() => {
+            const usage = tokenUsage.value;
+            if (!usage || !usage.total) return '0 tokens';
+            return `${formatTokenCount(usage.total)} tokens`;
+        });
+
+        const tokenContextPercent = computed(() => {
+            const usage = tokenUsage.value;
+            const limit = Number(usage && usage.context_limit_chars) || 0;
+            const current = Number(usage && usage.context_chars) || 0;
+            if (!limit || !current) return 0;
+            return Math.max(0, Math.min(100, Math.round((current / limit) * 100)));
+        });
+
+        const canIntervene = computed(() => {
+            if (interventionSaving.value) return false;
+            return true;
+        });
+
         const copyToClipboard = (text) => {
             navigator.clipboard.writeText(text).then(() => {
             });
@@ -1089,6 +1181,7 @@ createApp({
                     await fetchStatus();
                     await fetchLlmConfigs();
                 }
+                if (name === 'communication') await fetchCommunicationConfigs();
                 if (name === 'todo') await fetchToDo();
                 if (name === 'sop') await fetchSopList();
                 if (name === 'schedule') await refreshScheduleList();
@@ -1396,9 +1489,38 @@ createApp({
                 const data = await res.json();
                 selectedHistorySession.value = data;
                 historyMessages.value = Array.isArray(data.messages) ? data.messages : [];
+                historyTitleDraft.value = data.title || '';
             } catch (e) {
                 historyError.value = String(e && e.message ? e.message : e);
             }
+        };
+
+        const renameHistorySession = async () => {
+            const sessionId = selectedHistorySessionId.value;
+            const title = String(historyTitleDraft.value || '').trim();
+            if (!sessionId || !title) return;
+            historySavingTitle.value = true;
+            historyError.value = '';
+            historyNotice.value = '';
+            try {
+                const res = await fetch(`/api/conversations/${encodeURIComponent(sessionId)}/rename`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ title })
+                });
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                historyNotice.value = '已更新会话名称';
+                await fetchHistoryData();
+            } catch (e) {
+                historyError.value = String(e && e.message ? e.message : e);
+            } finally {
+                historySavingTitle.value = false;
+            }
+        };
+
+        const exportHistorySession = (sessionId = selectedHistorySessionId.value) => {
+            if (!sessionId) return;
+            window.open(`/api/conversations/${encodeURIComponent(sessionId)}/export`, '_blank');
         };
 
         const restoreHistorySession = async (sessionId = selectedHistorySessionId.value) => {
@@ -1504,6 +1626,128 @@ createApp({
                 backupError.value = String(e && e.message ? e.message : e);
             } finally {
                 backupCreating.value = false;
+            }
+        };
+
+        const fetchCommunicationConfigs = async () => {
+            communicationLoading.value = true;
+            communicationError.value = '';
+            communicationNotice.value = '';
+            try {
+                const res = await fetch('/api/communication_configs');
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+                communicationTools.value = Array.isArray(data.tools) ? data.tools : [];
+                communicationPath.value = data.path || '';
+                const drafts = { ...communicationDrafts.value };
+                for (const tool of communicationTools.value) {
+                    const current = drafts[tool.id] || {};
+                    drafts[tool.id] = {
+                        app_id: tool.app_id || current.app_id || '',
+                        secret: '',
+                        allowed_users: Array.isArray(tool.allowed_users) ? tool.allowed_users.join('\n') : (current.allowed_users || '')
+                    };
+                }
+                communicationDrafts.value = drafts;
+                if (communicationTools.value.length) {
+                    const current = communicationTools.value.find((tool) => tool.id === selectedCommunicationId.value) || communicationTools.value[0];
+                    selectedCommunicationId.value = current.id;
+                } else {
+                    selectedCommunicationId.value = '';
+                }
+                return true;
+            } catch (e) {
+                communicationError.value = String(e && e.message ? e.message : e);
+                return false;
+            } finally {
+                communicationLoading.value = false;
+            }
+        };
+
+        const selectedCommunicationTool = computed(() => {
+            return communicationTools.value.find((tool) => tool.id === selectedCommunicationId.value) || null;
+        });
+
+        const selectCommunicationTool = (toolId) => {
+            selectedCommunicationId.value = toolId || '';
+            communicationNotice.value = '';
+            communicationError.value = '';
+        };
+
+        const communicationDraft = (tool) => {
+            if (!tool) return { app_id: '', secret: '', allowed_users: '' };
+            return communicationDrafts.value[tool.id] || { app_id: '', secret: '', allowed_users: '' };
+        };
+
+        const communicationStatusClass = (statusName) => {
+            if (statusName === 'ok') return 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300';
+            if (statusName === 'failed') return 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300';
+            return 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-300';
+        };
+
+        const communicationStatusText = (statusName) => {
+            if (statusName === 'ok') return '运行中';
+            if (statusName === 'failed') return '已配置，未启动';
+            return '未配置';
+        };
+
+        const saveCommunicationConfig = async (tool = null) => {
+            const target = tool || selectedCommunicationTool.value;
+            if (!target || communicationSaving.value) return false;
+            const draft = communicationDraft(target);
+            communicationSaving.value = true;
+            communicationBusyId.value = target.id;
+            communicationError.value = '';
+            communicationNotice.value = '';
+            try {
+                const res = await fetch('/api/communication_configs/upsert', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        id: target.id,
+                        app_id: draft.app_id || '',
+                        secret: draft.secret || '',
+                        allowed_users: draft.allowed_users || ''
+                    })
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) throw new Error(data.error || '保存失败');
+                communicationNotice.value = `已保存 ${target.label} 配置`;
+                await fetchCommunicationConfigs();
+                return true;
+            } catch (e) {
+                communicationError.value = String(e && e.message ? e.message : e);
+                return false;
+            } finally {
+                communicationSaving.value = false;
+                communicationBusyId.value = '';
+            }
+        };
+
+        const runCommunicationAction = async (tool, action) => {
+            if (!tool || communicationBusyId.value) return;
+            communicationBusyId.value = tool.id;
+            communicationError.value = '';
+            communicationNotice.value = '';
+            try {
+                if (action === 'start') {
+                    const saved = await saveCommunicationConfig(tool);
+                    if (!saved) return;
+                    communicationBusyId.value = tool.id;
+                }
+                const res = await fetch('/api/communication_configs/action', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ id: tool.id, action })
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) throw new Error(data.error || '操作失败');
+                communicationNotice.value = `${tool.label}${action === 'stop' ? ' 已停止' : action === 'start' ? ' 已启动' : ' 状态已刷新'}`;
+                await fetchCommunicationConfigs();
+            } catch (e) {
+                communicationError.value = String(e && e.message ? e.message : e);
+            } finally {
+                communicationBusyId.value = '';
             }
         };
 
@@ -1900,6 +2144,51 @@ createApp({
             }
         };
 
+        const openIntervention = () => {
+            interventionOpen.value = true;
+            interventionNotice.value = '';
+            interventionError.value = '';
+            nextTick(() => {
+                const el = document.getElementById('ga-intervention-input');
+                if (el) el.focus();
+            });
+        };
+
+        const closeIntervention = () => {
+            if (interventionSaving.value) return;
+            interventionOpen.value = false;
+            interventionNotice.value = '';
+            interventionError.value = '';
+        };
+
+        const submitIntervention = async () => {
+            const prompt = String(interventionText.value || '').trim();
+            if (!prompt || interventionSaving.value) return;
+            interventionSaving.value = true;
+            interventionNotice.value = '';
+            interventionError.value = '';
+            try {
+                const res = await fetch('/api/intervene', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ prompt })
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok || data.error) throw new Error(data.error || '插入引导失败');
+                interventionText.value = '';
+                interventionNotice.value = '已加入引导队列，将在下一次回合切换时生效';
+                setTimeout(() => {
+                    interventionOpen.value = false;
+                    interventionNotice.value = '';
+                }, 900);
+                await fetchStatus();
+            } catch (e) {
+                interventionError.value = e && e.message ? e.message : String(e);
+            } finally {
+                interventionSaving.value = false;
+            }
+        };
+
         const injectSysPrompt = async () => {
              try {
                 await fetch('/api/control', {
@@ -1941,6 +2230,8 @@ createApp({
             setWorkspace,
             sidebarOpen,
             inputMessage,
+            selectedModeIds,
+            pendingGoalMode,
             messages,
             visibleMessages,
             hiddenCount,
@@ -1948,6 +2239,11 @@ createApp({
             submitInFlight,
             submissionNotice,
             status,
+            tokenUsage,
+            tokenUsageLabel,
+            tokenContextPercent,
+            formatTokenCount,
+            canIntervene,
             activeModal,
             openModal,
             closeModal,
@@ -1978,18 +2274,25 @@ createApp({
             reloadAgent,
             sendMessage,
             modeCommands,
+            selectedModeCommands,
             applyModeCommand,
+            confirmGoalMode,
+            cancelGoalMode,
             renderMarkdown,
             historySessionView,
             selectedHistorySessionId,
             selectedHistorySession,
             historyMessageView,
+            historyTitleDraft,
             historyNotice,
             historyLoading,
+            historySavingTitle,
             historyError,
             refreshHistoryData,
             selectHistorySession,
             restoreHistorySession,
+            renameHistorySession,
+            exportHistorySession,
             memoryFilesView,
             selectedMemoryFile,
             memoryContent,
@@ -2006,6 +2309,30 @@ createApp({
             backupCreating,
             backupNotice,
             backupError,
+            communicationTools,
+            communicationPath,
+            selectedCommunicationId,
+            selectedCommunicationTool,
+            communicationLoading,
+            communicationSaving,
+            communicationBusyId,
+            communicationNotice,
+            communicationError,
+            interventionOpen,
+            interventionText,
+            interventionNotice,
+            interventionError,
+            interventionSaving,
+            openIntervention,
+            closeIntervention,
+            submitIntervention,
+            fetchCommunicationConfigs,
+            selectCommunicationTool,
+            communicationDraft,
+            communicationStatusClass,
+            communicationStatusText,
+            saveCommunicationConfig,
+            runCommunicationAction,
             fetchBackups,
             createBackup,
             formatBackupSize,

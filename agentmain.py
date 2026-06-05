@@ -8,6 +8,11 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from llmcore import reload_mykeys, LLMSession, ToolClient, ClaudeSession, MixinSession, NativeToolClient, NativeClaudeSession, NativeOAISession
 from agent_loop import agent_runner_loop
+try:
+    from plugins.hooks import discover_and_load
+    discover_and_load(reload=True)
+except Exception:
+    pass
 from ga import GenericAgentHandler, smart_format, get_global_memory, format_error, consume_file
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -42,13 +47,16 @@ def get_system_prompt():
 class GeneraticAgent:
     def __init__(self):
         os.makedirs(os.path.join(script_dir, 'temp'), exist_ok=True)
+        os.makedirs(os.path.join(script_dir, 'temp', 'model_responses'), exist_ok=True)
         self.lock = threading.Lock()
         self.task_dir = None
         self.history = []
         self.task_queue = queue.Queue() 
         self.is_running = False; self.stop_sig = False
+        self.intervention_queue = queue.Queue()
         self.llm_no = 0;  self.inc_out = False
         self.handler = None; self.verbose = True
+        self.log_path = os.path.join(script_dir, 'temp', 'model_responses', f'model_responses_{os.getpid()}.txt')
         self.load_llm_sessions()
 
     def load_llm_sessions(self):
@@ -114,6 +122,27 @@ class GeneraticAgent:
         self.task_queue.put({"query": query, "source": source, "images": images or [], "output": display_queue})
         return display_queue
 
+    def add_intervention(self, text):
+        text = str(text or '').strip()
+        if not text:
+            return 0
+        self.intervention_queue.put(text)
+        return self.intervention_queue.qsize()
+
+    def has_pending_interventions(self):
+        return not self.intervention_queue.empty()
+
+    def consume_interventions(self):
+        items = []
+        while True:
+            try:
+                item = self.intervention_queue.get_nowait()
+            except queue.Empty:
+                break
+            if str(item or '').strip():
+                items.append(str(item).strip())
+        return items
+
     # i know it is dangerous, but raw_query is dangerous enough it doesn't enlarge
     def _handle_slash_cmd(self, raw_query, display_queue):
         if not raw_query.startswith('/'): return raw_query
@@ -139,6 +168,14 @@ class GeneraticAgent:
             if raw_query is None:
                 self.task_queue.task_done(); continue
             self.is_running = True
+            queued_prompts = self.consume_interventions()
+            if queued_prompts:
+                guidance = "\n\n".join(f"[MASTER] {prompt}" for prompt in queued_prompts)
+                raw_query = f"{guidance}\n\n[USER] {raw_query}"
+                display_queue.put({
+                    'next': f"[Info] 已注入 {len(queued_prompts)} 条排队引导。\n",
+                    'source': 'system'
+                })
             rquery = smart_format(raw_query.replace('\n', ' '), max_str_len=200)
             self.history.append(f"[USER]: {rquery}")
             
@@ -181,7 +218,19 @@ class GeneraticAgent:
                 self.task_queue.task_done()
                 if self.handler is not None: self.handler.code_stop_signal.append(1)
 
-    
+try:
+    from frontends.review_cmd import install as _install_review_cmd
+    _install_review_cmd(GeneraticAgent)
+except Exception:
+    pass
+
+try:
+    from frontends.cost_tracker import install as _install_cost_tracker
+    _install_cost_tracker()
+except Exception:
+    pass
+
+
 if __name__ == '__main__':
     import argparse
     from datetime import datetime

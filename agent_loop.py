@@ -1,6 +1,10 @@
 import json, re, os
 from dataclasses import dataclass
 from typing import Any, Optional
+try:
+    from plugins.hooks import trigger as _hook
+except Exception:
+    def _hook(*args, **kwargs): return None
 @dataclass
 class StepOutcome:
     data: Any
@@ -15,12 +19,17 @@ class BaseHandler:
     def tool_before_callback(self, tool_name, args, response): pass
     def tool_after_callback(self, tool_name, args, response, ret): pass
     def turn_end_callback(self, response, tool_calls, tool_results, turn, next_prompt, exit_reason): return next_prompt
-    def dispatch(self, tool_name, args, response, index=0):
+    def dispatch(self, tool_name, args, response, index=0, tool_num=1):
         method_name = f"do_{tool_name}"
         if hasattr(self, method_name):
             args['_index'] = index
+            args['_tool_num'] = tool_num
+            _hook('tool_before', {'handler': self, 'tool_name': tool_name, 'args': args, 'response': response,
+                                  'index': index, 'tool_num': tool_num})
             prer = yield from try_call_generator(self.tool_before_callback, tool_name, args, response)
             ret = yield from try_call_generator(getattr(self, method_name), args, response)
+            _hook('tool_after', {'handler': self, 'tool_name': tool_name, 'args': args, 'response': response,
+                                 'ret': ret, 'index': index, 'tool_num': tool_num})
             _ = yield from try_call_generator(self.tool_after_callback, tool_name, args, response, ret)
             return ret
         elif tool_name == 'bad_json': return StepOutcome(None, next_prompt=args.get('msg', 'bad_json'), should_exit=False)
@@ -39,18 +48,24 @@ def get_pretty_json(data):
         data = data.copy(); data["script"] = data["script"].replace("; ", ";\n  ")
     return json.dumps(data, indent=2, ensure_ascii=False).replace('\\n', '\n')
 
-def agent_runner_loop(client, system_prompt, user_input, handler, tools_schema, max_turns=40, verbose=True, initial_user_content=None):
+def agent_runner_loop(client, system_prompt, user_input, handler, tools_schema, max_turns=40, verbose=True, initial_user_content=None, yield_info=False):
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": initial_user_content if initial_user_content is not None else user_input}
     ]
     turn = 0;  handler.max_turns = max_turns
+    _hook('agent_before', {'client': client, 'system_prompt': system_prompt, 'user_input': user_input,
+                           'handler': handler, 'messages': messages})
     while turn < handler.max_turns:
         turn += 1; turnstr = f'LLM Running (Turn {turn}) ...'
         if handler.parent.task_dir: turnstr = f'Turn {turn} ...'
         if verbose: turnstr = f'**{turnstr}**'
+        if yield_info:
+            yield {'turn': turn}
         yield f"\n\n{turnstr}\n\n"
         if turn%10 == 0: client.last_tools = ''  # 每10轮重置一次工具描述，避免上下文过大导致的模型性能下降
+        _hook('turn_before', {'client': client, 'messages': messages, 'turn': turn, 'handler': handler})
+        _hook('llm_before', {'client': client, 'messages': messages, 'turn': turn, 'handler': handler})
         response_gen = client.chat(messages=messages, tools=tools_schema)
         if verbose:
             response = yield from response_gen
@@ -59,6 +74,7 @@ def agent_runner_loop(client, system_prompt, user_input, handler, tools_schema, 
             response = exhaust(response_gen)
             cleaned = _clean_content(response.content)
             if cleaned: yield cleaned + '\n'
+        _hook('llm_after', {'client': client, 'messages': messages, 'response': response, 'turn': turn, 'handler': handler})
 
         if not response.tool_calls: tool_calls = [{'tool_name': 'no_tool', 'args': {}}]
         else: tool_calls = [{'tool_name': tc.function.name, 'args': json.loads(tc.function.arguments), 'id': tc.id}
@@ -72,7 +88,7 @@ def agent_runner_loop(client, system_prompt, user_input, handler, tools_schema, 
                 if verbose: yield f"🛠️ Tool: `{tool_name}`  📥 args:\n````text\n{get_pretty_json(args)}\n````\n"
                 else: yield f"🛠️ {tool_name}({_compact_tool_args(tool_name, args)})\n\n\n"
             handler.current_turn = turn
-            gen = handler.dispatch(tool_name, args, response, index=ii)
+            gen = handler.dispatch(tool_name, args, response, index=ii, tool_num=len(tool_calls))
             try:
                 v = next(gen)
                 def proxy(): yield v; return (yield from gen)
@@ -91,11 +107,19 @@ def agent_runner_loop(client, system_prompt, user_input, handler, tools_schema, 
                 tool_results.append({'tool_use_id': tid, 'content': datastr})
             next_prompts.add(outcome.next_prompt)
         if len(next_prompts) == 0 or exit_reason:
-            if len(handler._done_hooks) == 0 or exit_reason.get('result', '') == 'EXITED': break
+            if len(handler._done_hooks) == 0 or exit_reason.get('result', '') == 'EXITED':
+                _hook('turn_after', {'client': client, 'messages': messages, 'response': response, 'tool_calls': tool_calls,
+                                     'tool_results': tool_results, 'turn': turn, 'next_prompt': '',
+                                     'exit_reason': exit_reason, 'handler': handler})
+                break
             next_prompts.add(handler._done_hooks.pop(0))
         next_prompt = handler.turn_end_callback(response, tool_calls, tool_results, turn, '\n'.join(next_prompts), exit_reason)
+        _hook('turn_after', {'client': client, 'messages': messages, 'response': response, 'tool_calls': tool_calls,
+                             'tool_results': tool_results, 'turn': turn, 'next_prompt': next_prompt,
+                             'exit_reason': exit_reason, 'handler': handler})
         messages = [{"role": "user", "content": next_prompt, "tool_results": tool_results}]   # just new message, history is kept in *Session
     if exit_reason: handler.turn_end_callback(response, tool_calls, tool_results, turn, '', exit_reason)
+    _hook('agent_after', {'client': client, 'handler': handler, 'exit_reason': exit_reason or {'result': 'MAX_TURNS_EXCEEDED'}})
     return exit_reason or {'result': 'MAX_TURNS_EXCEEDED'}
 
 def _clean_content(text):

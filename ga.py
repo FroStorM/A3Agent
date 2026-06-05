@@ -623,6 +623,10 @@ class GenericAgentHandler(BaseHandler):
             remaining = self._check_plan_completion()
             if remaining == 0:
                 self._exit_plan_mode(); yield "[Info] Plan完成：plan.md中0个[ ]残留，退出plan模式。\n"
+
+        if hasattr(self.parent, 'has_pending_interventions') and self.parent.has_pending_interventions():
+            yield "[Info] Detected queued user guidance. Continuing with intervention.\n"
+            return StepOutcome({}, next_prompt="[System] 用户刚刚插入了新的引导提示。不要结束任务；继续下一轮并严格遵循后续 [MASTER] 引导。")
         
         yield "[Info] Final response to user.\n"
         return StepOutcome(response, next_prompt=None)
@@ -681,8 +685,16 @@ class GenericAgentHandler(BaseHandler):
 
         injkeyinfo = consume_file(self.parent.task_dir, '_keyinfo')
         injprompt = consume_file(self.parent.task_dir, '_intervene')
+        queued_prompts = []
+        if hasattr(self.parent, 'consume_interventions'):
+            try:
+                queued_prompts = self.parent.consume_interventions()
+            except Exception:
+                queued_prompts = []
         if injkeyinfo: self.working['key_info'] = self.working.get('key_info', '') + f"\n[MASTER] {injkeyinfo}"
         if injprompt: next_prompt += f"\n\n[MASTER] {injprompt}\n"
+        for prompt in queued_prompts:
+            next_prompt += f"\n\n[MASTER] {prompt}\n"
         for hook in getattr(self.parent, '_turn_end_hooks', {}).values(): hook(locals())  # current readonly
         return next_prompt
 

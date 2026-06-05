@@ -7,6 +7,7 @@ import asyncio
 import queue
 import traceback
 import shutil
+import subprocess
 from datetime import datetime
 from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse, FileResponse
@@ -80,6 +81,50 @@ def _debug_log(kind, **fields):
             f.write(line + "\n")
     except Exception:
         pass
+
+def _token_usage_payload():
+    try:
+        from frontends import cost_tracker
+    except Exception:
+        return {"available": False}
+    try:
+        trackers = cost_tracker.all_trackers()
+        total = cost_tracker.TokenStats()
+        started_values = []
+        for item in trackers.values():
+            total.requests += int(getattr(item, "requests", 0) or 0)
+            total.input += int(getattr(item, "input", 0) or 0)
+            total.output += int(getattr(item, "output", 0) or 0)
+            total.cache_create += int(getattr(item, "cache_create", 0) or 0)
+            total.cache_read += int(getattr(item, "cache_read", 0) or 0)
+            total.last_input = max(total.last_input, int(getattr(item, "last_input", 0) or 0))
+            total.last_output = max(total.last_output, int(getattr(item, "last_output", 0) or 0))
+            started = float(getattr(item, "started_at", 0) or 0)
+            if started > 0:
+                started_values.append(started)
+        if started_values:
+            total.started_at = min(started_values)
+        backend = getattr(getattr(getattr(state, "agent", None), "llmclient", None), "backend", None)
+        context_chars = cost_tracker.current_input_chars(backend) if backend else 0
+        context_limit_chars = cost_tracker.context_window_chars(backend) if backend else 0
+        return {
+            "available": True,
+            "threads": len(trackers),
+            "requests": total.requests,
+            "input": total.input,
+            "output": total.output,
+            "cache_create": total.cache_create,
+            "cache_read": total.cache_read,
+            "total": total.total_tokens(),
+            "last_input": total.last_input,
+            "last_output": total.last_output,
+            "cache_hit_rate": round(total.cache_hit_rate(), 1),
+            "elapsed_seconds": round(total.elapsed_seconds(), 1),
+            "context_chars": context_chars,
+            "context_limit_chars": context_limit_chars,
+        }
+    except Exception as e:
+        return {"available": False, "error": str(e)}
 
 def _should_copy_file(src, dst, overwrite_if_source_newer=False):
     try:
@@ -959,6 +1004,31 @@ def _message_preview(msg, limit=220):
     return _compact_text(content, limit)
 
 
+def _conversation_markdown(data):
+    data = _normalize_conversation_doc(data)
+    lines = [
+        f"# {data.get('title') or 'A3Agent Session'}",
+        "",
+        f"- Session: {data.get('session_id') or ''}",
+        f"- Created: {data.get('created_at') or ''}",
+        f"- Updated: {data.get('updated_at') or ''}",
+        "",
+    ]
+    summary = data.get("summary") or ""
+    if summary:
+        lines.extend(["## Summary", "", summary, ""])
+    lines.extend(["## Messages", ""])
+    for msg in data.get("messages") or []:
+        role = str(msg.get("role") or "entry")
+        stamp = str(msg.get("created_at") or msg.get("timestamp") or "")
+        content = _message_text(msg.get("content"))
+        lines.append(f"### {role}" + (f" · {stamp}" if stamp else ""))
+        lines.append("")
+        lines.append(content or "")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
 _MODE_BOILERPLATE_PREFIXES = (
     "@plan 请进入计划模式：先把目标拆成可执行步骤，确认风险和验证方式，再按步骤推进。",
     "@watch 请以监察者模式运行：检查当前 workspace、ToDo、计划任务和潜在问题，必要时提醒我确认。",
@@ -1069,7 +1139,8 @@ def _normalize_conversation_doc(data):
     data.setdefault("session_id", uuid.uuid4().hex)
     data.setdefault("created_at", datetime.now().isoformat(timespec="seconds"))
     data.setdefault("updated_at", data.get("created_at"))
-    data["title"] = _conversation_title(messages)
+    if not data.get("title_locked") or not str(data.get("title") or "").strip():
+        data["title"] = _conversation_title(messages)
     data["summary"] = _conversation_summary(messages)
     return data
 
@@ -1090,7 +1161,8 @@ def _read_current_conversation():
 def _write_current_conversation(data):
     data = _normalize_conversation_doc(data)
     data["updated_at"] = datetime.now().isoformat(timespec="seconds")
-    data["title"] = _conversation_title(data.get("messages") or [])
+    if not data.get("title_locked") or not str(data.get("title") or "").strip():
+        data["title"] = _conversation_title(data.get("messages") or [])
     data["summary"] = _conversation_summary(data.get("messages") or [])
     path = _current_conversation_path()
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -1136,6 +1208,21 @@ def _conversation_session_payload(data, path="", current=False):
         "current": bool(current),
         "path": path,
     }
+
+
+def _write_conversation_file(kind, path, data):
+    data = _normalize_conversation_doc(data)
+    if kind == "current":
+        _write_current_conversation(data)
+        return
+    data["updated_at"] = datetime.now().isoformat(timespec="seconds")
+    if not data.get("title_locked") or not str(data.get("title") or "").strip():
+        data["title"] = _conversation_title(data.get("messages") or [])
+    data["summary"] = _conversation_summary(data.get("messages") or [])
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
 
 
 def _read_conversation_file(path):
@@ -1328,6 +1415,129 @@ def _auto_make_url(base, path):
     b = (base or "").strip().rstrip("/")
     p = (path or "").strip().lstrip("/")
     return f"{b}/{p}" if p else b
+
+
+COMMUNICATION_TOOLS = {
+    "feishu": {
+        "label": "飞书",
+        "name": "Feishu",
+        "id_key": "fs_app_id",
+        "secret_key": "fs_app_secret",
+        "allowed_key": "fs_allowed_users",
+        "script": "fsapp.py",
+        "process_keywords": ("frontends/fsapp.py", "fsapp.py"),
+    },
+    "wecom": {
+        "label": "企业微信",
+        "name": "WeCom",
+        "id_key": "wecom_bot_id",
+        "secret_key": "wecom_secret",
+        "allowed_key": "wecom_allowed_users",
+        "script": "wecomapp.py",
+        "process_keywords": ("frontends/wecomapp.py", "wecomapp.py"),
+    },
+    "qq": {
+        "label": "QQ",
+        "name": "QQ",
+        "id_key": "qq_app_id",
+        "secret_key": "qq_app_secret",
+        "allowed_key": "qq_allowed_users",
+        "script": "qqapp.py",
+        "process_keywords": ("frontends/qqapp.py", "qqapp.py"),
+    },
+    "dingtalk": {
+        "label": "钉钉",
+        "name": "DingTalk",
+        "id_key": "dingtalk_client_id",
+        "secret_key": "dingtalk_client_secret",
+        "allowed_key": "dingtalk_allowed_users",
+        "script": "dingtalkapp.py",
+        "process_keywords": ("frontends/dingtalkapp.py", "dingtalkapp.py"),
+    },
+}
+
+
+def _mask_config_secret(value):
+    value = str(value or "")
+    if not value:
+        return ""
+    if len(value) <= 4:
+        return "*" * len(value)
+    return "*" * max(4, len(value) - 4) + value[-4:]
+
+
+def _process_snapshot():
+    try:
+        return subprocess.check_output(["ps", "-ef"], text=True, stderr=subprocess.DEVNULL, timeout=3)
+    except Exception:
+        return ""
+
+
+def _communication_script_path(spec):
+    script = spec.get("script")
+    if not script:
+        return ""
+    candidates = [
+        os.path.join(BASE_DIR, "frontends", script),
+        os.path.join(BASE_DIR, "..", "frontends", script),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "frontends", script),
+    ]
+    for candidate in candidates:
+        path = os.path.abspath(os.path.normpath(candidate))
+        if os.path.exists(path):
+            return path
+    return os.path.abspath(os.path.join(BASE_DIR, "frontends", script))
+
+
+def _communication_python_path():
+    candidates = [
+        os.environ.get("GA_COMM_PYTHON"),
+        os.path.join(os.path.expanduser("~"), "anaconda3", "envs", "kw", "bin", "python"),
+        "/opt/anaconda3/envs/kw/bin/python",
+        sys.executable,
+    ]
+    for candidate in candidates:
+        if candidate and os.path.exists(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return sys.executable
+
+
+def _communication_tool_status(tool_id, spec, values, process_text):
+    app_id = str(values.get(spec["id_key"], "") or "").strip()
+    secret = str(values.get(spec["secret_key"], "") or "").strip()
+    allowed = values.get(spec.get("allowed_key", ""), [])
+    if isinstance(allowed, str):
+        allowed = [allowed] if allowed.strip() else []
+    elif not isinstance(allowed, list):
+        allowed = []
+    configured = bool(app_id and (secret or spec.get("optional")))
+    running = bool(configured and process_text and any(k in process_text for k in spec.get("process_keywords", ())))
+    if not configured:
+        status = "unconfigured"
+    elif running:
+        status = "ok"
+    else:
+        status = "failed"
+    return {
+        "id": tool_id,
+        "label": spec["label"],
+        "name": spec.get("name", ""),
+        "status": status,
+        "configured": configured,
+        "running": running,
+        "id_key": spec["id_key"],
+        "secret_key": spec["secret_key"],
+        "allowed_key": spec.get("allowed_key", ""),
+        "app_id": app_id,
+        "has_secret": bool(secret),
+        "secret_masked": _mask_config_secret(secret),
+        "allowed_users": [str(x) for x in allowed if str(x).strip()],
+    }
+
+
+def _communication_log_path(tool_id):
+    root = ensure_dir(os.path.join(get_user_data_dir(), "logs"))
+    return os.path.join(root, f"communication-{tool_id}.log")
 
 def log_api(msg):
     line = f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}"
@@ -1551,6 +1761,13 @@ def init_agent():
             importlib.reload(sys.modules["llmcore"])
         else:
             import llmcore  # noqa: F401
+        if "agent_loop" in sys.modules:
+            importlib.reload(sys.modules["agent_loop"])
+        try:
+            from plugins.hooks import discover_and_load
+            discover_and_load(reload=True)
+        except Exception:
+            pass
         try:
             if "sidercall" in sys.modules:
                 importlib.reload(sys.modules["sidercall"])
@@ -1679,6 +1896,7 @@ def get_status():
             "is_running": is_running,
             "ui_state": state.ui_state,
             "history_len": len(history),
+            "token_usage": _token_usage_payload(),
             "autonomous_enabled": state.autonomous_enabled,
             "autonomous_threshold": state.autonomous_threshold,
             "idle_time": idle_time,
@@ -1696,6 +1914,7 @@ def get_status():
             "is_running": False,
             "ui_state": state.ui_state,
             "history_len": 0,
+            "token_usage": {"available": False, "error": str(e)},
             "autonomous_enabled": state.autonomous_enabled,
             "autonomous_threshold": state.autonomous_threshold,
             "idle_time": 0,
@@ -1792,6 +2011,36 @@ async def restore_conversation(session_id: str):
         "archived_current_path": archived_current_path,
         "source_path": path,
     }
+
+
+@app.post("/api/conversations/{session_id}/rename")
+async def rename_conversation(session_id: str, request: Request):
+    kind, path, data = _find_conversation_file(session_id)
+    if not data:
+        return JSONResponse({"error": "conversation not found"}, status_code=404)
+    body = await request.json()
+    title = str(body.get("title") or "").strip()
+    if not title:
+        return JSONResponse({"error": "title required"}, status_code=400)
+    data["title"] = title[:80]
+    data["title_locked"] = True
+    data["updated_at"] = datetime.now().isoformat(timespec="seconds")
+    _write_conversation_file(kind, path, data)
+    return {"status": "renamed", "session": _conversation_session_payload(data, path=path, current=(kind == "current"))}
+
+
+@app.get("/api/conversations/{session_id}/export")
+def export_conversation(session_id: str):
+    kind, path, data = _find_conversation_file(session_id)
+    if not data:
+        return JSONResponse({"error": "conversation not found"}, status_code=404)
+    export_dir = os.path.join(_conversation_root_dir(), "exports")
+    os.makedirs(export_dir, exist_ok=True)
+    safe_title = re.sub(r"[^A-Za-z0-9_.\-\u4e00-\u9fff]+", "_", str(data.get("title") or "session")).strip("_")[:48] or "session"
+    out_path = os.path.join(export_dir, f"{safe_title}-{data.get('session_id')}.md")
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(_conversation_markdown(data))
+    return FileResponse(out_path, media_type="text/markdown", filename=os.path.basename(out_path))
 
 
 @app.get("/api/memory/list")
@@ -1919,6 +2168,25 @@ async def chat(request: Request):
     threading.Thread(target=process_agent_output, args=(display_queue, "user", prompt, run_id, cancel_event, request_id), daemon=True).start()
     
     return {"status": "queued", "run_id": run_id, "request_id": request_id}
+
+@app.post("/api/intervene")
+async def intervene(request: Request):
+    if state.agent_init_error:
+        return {"error": f"Agent init failed: {state.agent_init_error}"}
+    data = await request.json()
+    prompt = str(data.get("prompt") or "").strip()
+    if not prompt:
+        return JSONResponse(status_code=400, content={"error": "prompt required"})
+    queued = state.agent.add_intervention(prompt)
+    state.last_activity_time = time.time()
+    _debug_log("intervene_queued", prompt_len=len(prompt), queued=queued)
+    stream_manager.broadcast(json.dumps({
+        "type": "system",
+        "content": f"已加入引导队列，将在下一次回合切换时生效：{prompt}",
+        "source": "intervention",
+        "timestamp": time.strftime('%H:%M:%S')
+    }, ensure_ascii=False))
+    return {"status": "queued", "queued": queued}
 
 @app.post("/api/control")
 async def control(request: Request):
@@ -2206,6 +2474,109 @@ async def delete_llm_config(request: Request):
     _write_text(path, content)
     err = _reload_agent_state()
     return {"status": "deleted", "agent_init_error": err, "configs": _extract_llm_configs_from_module(values), "llm_list": state.agent.list_llms() if not err else []}
+
+
+@app.get("/api/communication_configs")
+def list_communication_configs():
+    base = get_user_data_dir()
+    path = resolve_mykey_path(base, prefer_existing=True)
+    values = _load_mykey_module_from_path(path)
+    process_text = _process_snapshot()
+    tools = [
+        _communication_tool_status(tool_id, spec, values, process_text)
+        for tool_id, spec in COMMUNICATION_TOOLS.items()
+    ]
+    return {"tools": tools, "path": str(path) if path else ""}
+
+
+@app.post("/api/communication_configs/upsert")
+async def upsert_communication_config(request: Request):
+    data = await request.json()
+    tool_id = str(data.get("id") or "").strip()
+    spec = COMMUNICATION_TOOLS.get(tool_id)
+    if not spec:
+        return JSONResponse(status_code=400, content={"error": "unknown communication tool"})
+
+    app_id = data.get("app_id")
+    secret = data.get("secret")
+    allowed_users = data.get("allowed_users", [])
+    if not isinstance(app_id, str):
+        return JSONResponse(status_code=400, content={"error": "app_id must be string"})
+    if secret is not None and not isinstance(secret, str):
+        return JSONResponse(status_code=400, content={"error": "secret must be string"})
+    if isinstance(allowed_users, str):
+        allowed_users = [x.strip() for x in re.split(r"[\n,，]+", allowed_users) if x.strip()]
+    elif isinstance(allowed_users, list):
+        allowed_users = [str(x).strip() for x in allowed_users if str(x).strip()]
+    else:
+        return JSONResponse(status_code=400, content={"error": "allowed_users must be list or string"})
+
+    base = get_user_data_dir()
+    path = resolve_mykey_path(base, prefer_existing=False)
+    module = _load_mykey_module_from_path(path)
+    order, values = _read_mykey_simple_assignments(module)
+    for key in (spec["id_key"], spec["secret_key"], spec.get("allowed_key", "")):
+        if key and key not in order:
+            order.append(key)
+
+    values[spec["id_key"]] = app_id.strip()
+    if secret is not None and secret.strip():
+        values[spec["secret_key"]] = secret.strip()
+    elif spec["secret_key"] not in values:
+        values[spec["secret_key"]] = ""
+    if spec.get("allowed_key"):
+        values[spec["allowed_key"]] = allowed_users
+
+    content = _render_mykey_py(order, values)
+    _write_text(path, content)
+    process_text = _process_snapshot()
+    tool = _communication_tool_status(tool_id, spec, values, process_text)
+    return {"status": "saved", "tool": tool, "path": str(path)}
+
+
+@app.post("/api/communication_configs/action")
+async def communication_config_action(request: Request):
+    data = await request.json()
+    tool_id = str(data.get("id") or "").strip()
+    action = str(data.get("action") or "").strip()
+    spec = COMMUNICATION_TOOLS.get(tool_id)
+    if not spec:
+        return JSONResponse(status_code=400, content={"error": "unknown communication tool"})
+    if action not in ("test", "start", "stop"):
+        return JSONResponse(status_code=400, content={"error": "unknown action"})
+
+    if action == "start":
+        path = _communication_script_path(spec)
+        if not os.path.exists(path):
+            return JSONResponse(status_code=404, content={"error": f"script not found: {path}"})
+        process_text = _process_snapshot()
+        if not any(k in process_text for k in spec.get("process_keywords", ())):
+            log_path = _communication_log_path(tool_id)
+            python_path = _communication_python_path()
+            with open(log_path, "ab") as log_file:
+                subprocess.Popen(
+                    [python_path, "-u", path],
+                    cwd=os.path.dirname(os.path.abspath(__file__)),
+                    stdout=log_file,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                )
+            time.sleep(1)
+    elif action == "stop":
+        script = spec.get("script", "")
+        if script:
+            try:
+                subprocess.run(["pkill", "-f", script], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
+            except Exception:
+                pass
+            time.sleep(0.5)
+
+    base = get_user_data_dir()
+    path = resolve_mykey_path(base, prefer_existing=True)
+    values = _load_mykey_module_from_path(path)
+    process_text = _process_snapshot()
+    tool = _communication_tool_status(tool_id, spec, values, process_text)
+    return {"status": "ok", "action": action, "tool": tool, "python": _communication_python_path()}
 
 @app.get("/api/todo")
 def get_todo():
