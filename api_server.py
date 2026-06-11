@@ -8,6 +8,10 @@ import queue
 import traceback
 import shutil
 import subprocess
+import base64
+import mimetypes
+import socket
+import signal
 from datetime import datetime
 from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse, FileResponse
@@ -18,6 +22,7 @@ import importlib
 import importlib.util
 import re
 import uuid
+from difflib import SequenceMatcher
 from path_utils import (
     app_data_dir,
     config_dir_name,
@@ -284,12 +289,351 @@ def get_user_data_dir():
     return str(cfg)
 
 
+goal_process = {"proc": None, "state_path": "", "started_at": 0}
+hive_process = {"bbs": None, "master": None, "workers": [], "state_path": "", "started_at": 0}
+
+
+def _goal_dir():
+    path = os.path.join(get_user_data_dir(), "goals")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _goal_state_path():
+    return os.path.join(_goal_dir(), "goal_state.json")
+
+
+def _goal_log_path():
+    return os.path.join(_goal_dir(), "goal_mode.log")
+
+
+def _hive_dir():
+    path = os.path.join(get_user_data_dir(), "hive")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _hive_state_path():
+    return os.path.join(_hive_dir(), "hive_state.json")
+
+
+def _hive_log_path(name):
+    return os.path.join(_hive_dir(), f"{name}.log")
+
+
+def _read_goal_state():
+    path = _goal_state_path()
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def _goal_proc_alive():
+    proc = goal_process.get("proc")
+    return bool(proc is not None and proc.poll() is None)
+
+
+def _goal_payload():
+    data = _read_goal_state() or {}
+    budget = float(data.get("budget_seconds") or 0)
+    start = float(data.get("start_time") or 0)
+    elapsed = max(0, time.time() - start) if start else 0
+    remaining = max(0, budget - elapsed) if budget else 0
+    return {
+        "state_path": _goal_state_path(),
+        "log_path": _goal_log_path(),
+        "state": data,
+        "running": _goal_proc_alive() and data.get("status") in ("running", "wrapping_up"),
+        "elapsed_seconds": elapsed,
+        "remaining_seconds": remaining,
+        "pid": getattr(goal_process.get("proc"), "pid", None) if _goal_proc_alive() else None,
+    }
+
+
+def _stop_goal_process(mark_status="stopped"):
+    proc = goal_process.get("proc")
+    if proc is not None and proc.poll() is None:
+        try:
+            proc.terminate()
+            proc.wait(timeout=3)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+    data = _read_goal_state()
+    if data:
+        data["status"] = mark_status
+        data["end_time"] = time.time()
+        with open(_goal_state_path(), "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def _start_goal_reflect_process(state_doc, state_path, log_path, cwd=None, extra_env=None):
+    with open(state_path, "w", encoding="utf-8") as f:
+        json.dump(state_doc, f, ensure_ascii=False, indent=2)
+    env = os.environ.copy()
+    env["GOAL_STATE"] = state_path
+    env["GA_WORKSPACE_ROOT"] = get_workspace_root_dir()
+    env["GA_USER_DATA_DIR"] = get_user_data_dir()
+    if extra_env:
+        env.update({str(k): str(v) for k, v in extra_env.items()})
+    log_f = open(log_path, "a", encoding="utf-8")
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, os.path.join(BASE_DIR, "agentmain.py"), "--reflect", os.path.join(BASE_DIR, "reflect", "goal_mode.py")],
+            cwd=cwd or BASE_DIR,
+            env=env,
+            stdout=log_f,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+        return proc
+    except Exception:
+        try:
+            log_f.close()
+        except Exception:
+            pass
+        raise
+
+
+def _free_port():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return int(s.getsockname()[1])
+
+
+def _proc_alive(proc):
+    return bool(proc is not None and proc.poll() is None)
+
+
+def _read_json_file(path):
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def _hive_payload():
+    data = _read_json_file(_hive_state_path()) or {}
+    master_state = _read_json_file(data.get("master_goal_state_path") or os.path.join(_hive_dir(), "master_goal_state.json")) or {}
+    workers = hive_process.get("workers") or []
+    bbs_alive = _proc_alive(hive_process.get("bbs"))
+    master_alive = _proc_alive(hive_process.get("master"))
+    worker_pids = [p.pid for p in workers if _proc_alive(p)]
+    worker_alive = bool(worker_pids)
+    master_status = master_state.get("status") or ("running" if master_alive else "")
+    budget_seconds = float(master_state.get("budget_seconds") or (float(data.get("budget_minutes") or 0) * 60) or 0)
+    start_time = float(master_state.get("start_time") or 0)
+    elapsed_seconds = max(0.0, time.time() - start_time) if start_time else 0.0
+    remaining_seconds = max(0.0, budget_seconds - elapsed_seconds) if budget_seconds else None
+    turns_used = int(master_state.get("turns_used") or 0)
+    max_turns = int(master_state.get("max_turns") or data.get("max_turns") or 0)
+    turns_remaining = max(0, max_turns - turns_used) if max_turns else None
+    state_status = data.get("status") or ""
+    effective_status = state_status
+    if master_status in ("done_budget", "done", "stopped", "error") and not master_alive:
+        effective_status = master_status
+    elif worker_alive:
+        effective_status = "workers_running"
+    elif bbs_alive and state_status == "running" and master_status:
+        effective_status = f"bbs_only_{master_status}"
+    if data and effective_status != state_status and not worker_alive and not master_alive:
+        data["status"] = effective_status
+        if master_state.get("end_time") and not data.get("end_time"):
+            data["end_time"] = master_state.get("end_time")
+        _write_hive_state(data)
+    output_dir = data.get("output_dir") or os.path.join(data.get("hive_root") or _hive_dir(), "outputs")
+    recent_outputs = []
+    try:
+        if output_dir and os.path.isdir(output_dir):
+            paths = []
+            for root, _dirs, files in os.walk(output_dir):
+                for name in files:
+                    if name.startswith("."):
+                        continue
+                    path = os.path.join(root, name)
+                    paths.append(path)
+            paths.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+            recent_outputs = [
+                {
+                    "path": path,
+                    "name": os.path.basename(path),
+                    "mtime": os.path.getmtime(path),
+                    "size": os.path.getsize(path),
+                }
+                for path in paths[:20]
+            ]
+    except Exception:
+        recent_outputs = []
+    return {
+        "state_path": _hive_state_path(),
+        "state": data,
+        "master_state": master_state,
+        "effective_status": effective_status,
+        "running": bbs_alive or master_alive or worker_alive,
+        "active_coordination": master_alive or worker_alive,
+        "bbs_running": bbs_alive,
+        "master_running": master_alive,
+        "master_status": master_status,
+        "budget_seconds": budget_seconds,
+        "elapsed_seconds": elapsed_seconds,
+        "remaining_seconds": remaining_seconds,
+        "turns_used": turns_used,
+        "max_turns": max_turns,
+        "turns_remaining": turns_remaining,
+        "paused_targets": data.get("paused_targets") or [],
+        "worker_pids": worker_pids,
+        "bbs_pid": hive_process.get("bbs").pid if bbs_alive else None,
+        "master_pid": hive_process.get("master").pid if master_alive else None,
+        "output_dir": output_dir,
+        "recent_outputs": recent_outputs,
+    }
+
+
+def _write_hive_state(data):
+    with open(_hive_state_path(), "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def _terminate_proc(proc):
+    if not _proc_alive(proc):
+        return
+    try:
+        proc.terminate()
+        proc.wait(timeout=3)
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
+def _stop_hive_processes(mark_status="stopped"):
+    data = _read_json_file(_hive_state_path()) or {}
+    if data and mark_status == "stopped":
+        try:
+            token = data.get("seed_token")
+            base_url = data.get("base_url")
+            board_key = data.get("board_key")
+            if token and base_url and board_key:
+                _hive_http_json(
+                    f"{base_url}/post",
+                    {"token": token, "content": "Hive 已由用户停止。master 和 worker 不应继续接新任务，除非用户明确重新启动。"},
+                    board_key,
+                )
+        except Exception:
+            pass
+    _terminate_proc(hive_process.get("master"))
+    for proc in list(hive_process.get("workers") or []):
+        _terminate_proc(proc)
+    _terminate_proc(hive_process.get("bbs"))
+    if data:
+        data["status"] = mark_status
+        data["end_time"] = time.time()
+        _write_hive_state(data)
+
+
+def _unique_paths(paths):
+    out = []
+    seen = set()
+    for path in paths:
+        if not path:
+            continue
+        try:
+            ap = os.path.abspath(path)
+        except Exception:
+            continue
+        if ap not in seen:
+            seen.add(ap)
+            out.append(ap)
+    return out
+
+
+def _todo_paths():
+    root = os.path.abspath(BASE_DIR)
+    canonical = os.path.join(root, "temp", "TODO.txt")
+    legacy_candidates = [
+        os.path.join(get_user_data_dir(), "ToDo.txt"),
+        os.path.join(get_user_data_dir(), "TODO.txt"),
+        os.path.join(get_workspace_root_dir(), "ToDo.txt"),
+        os.path.join(get_workspace_root_dir(), "TODO.txt"),
+        os.path.join(root, "ToDo.txt"),
+        os.path.join(root, "TODO.txt"),
+    ]
+    legacy = [p for p in _unique_paths(legacy_candidates) if os.path.abspath(p) != os.path.abspath(canonical)]
+    return canonical, legacy
+
+
+def _ensure_todo_file():
+    canonical, legacy_paths = _todo_paths()
+    if os.path.isfile(canonical):
+        return canonical, None
+
+    for legacy in legacy_paths:
+        if not os.path.isfile(legacy):
+            continue
+        try:
+            content = _read_text(legacy)
+        except Exception:
+            continue
+        if content:
+            _write_text(canonical, content)
+            return canonical, legacy
+
+    return canonical, None
+
+
 def _get_app_data_dir():
     return str(app_data_dir())
 
 
 def _workspace_history_path():
     return str(workspace_history_path())
+
+def _upload_image_dir():
+    path = os.path.join(_get_app_data_dir(), "uploads", "images")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _safe_upload_image_path(filename):
+    name = os.path.basename(str(filename or ""))
+    name = re.sub(r"[^A-Za-z0-9_.-]+", "_", name).strip("._")
+    if not name:
+        name = "image.png"
+    stem, ext = os.path.splitext(name)
+    ext = ext.lower()
+    if ext not in (".png", ".jpg", ".jpeg", ".gif", ".webp"):
+        ext = ".png"
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    return os.path.join(_upload_image_dir(), f"{stamp}-{uuid.uuid4().hex[:8]}-{stem[:40] or 'image'}{ext}")
+
+
+def _decode_image_data_url(data_url, fallback_mime="image/png"):
+    raw = str(data_url or "")
+    mime = fallback_mime
+    payload = raw
+    if raw.startswith("data:"):
+        header, _, payload = raw.partition(",")
+        m = re.match(r"data:([^;,]+)", header)
+        if m:
+            mime = m.group(1)
+        if ";base64" not in header:
+            return None, mime
+    try:
+        return base64.b64decode(payload, validate=False), mime
+    except Exception:
+        return None, mime
 
 def _read_workspace_history():
     path = _workspace_history_path()
@@ -955,6 +1299,12 @@ def _archived_conversation_dir():
     return path
 
 
+def _live_conversation_dir():
+    path = os.path.join(_conversation_root_dir(), "live_sessions")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
 def _new_conversation_doc():
     now = datetime.now().isoformat(timespec="seconds")
     return {
@@ -1210,6 +1560,91 @@ def _conversation_session_payload(data, path="", current=False):
     }
 
 
+def _search_norm(text):
+    text = _message_text(text).lower()
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"[\s\r\n\t]+", " ", text)
+    return text.strip()
+
+
+def _search_tokens(text):
+    text = _search_norm(text)
+    cjk = re.findall(r"[\u4e00-\u9fff]", text)
+    words = re.findall(r"[a-z0-9_]{2,}", text)
+    grams = set()
+    compact = re.sub(r"\s+", "", text)
+    for n in (2, 3):
+        for i in range(max(0, len(compact) - n + 1)):
+            grams.add(compact[i:i + n])
+    return set(cjk) | set(words) | grams
+
+
+def _conversation_search_score(query, haystack, mode="auto"):
+    q = _search_norm(query)
+    h = _search_norm(haystack)
+    if not q or not h:
+        return 0.0
+
+    terms = [t for t in re.split(r"\s+", q) if t]
+    keyword_score = 0.0
+    for term in terms:
+        count = h.count(term)
+        if count:
+            keyword_score += 3.0 + min(count, 8) * 0.4
+    if q in h:
+        keyword_score += 6.0
+
+    q_tokens = _search_tokens(q)
+    h_tokens = _search_tokens(h)
+    semantic_score = 0.0
+    if q_tokens and h_tokens:
+        overlap = q_tokens & h_tokens
+        semantic_score = len(overlap) / max(1, len(q_tokens))
+        semantic_score += 0.35 * (len(overlap) / max(1, len(h_tokens)))
+        if q in h:
+            semantic_score += 0.5
+
+    fuzzy_score = 0.0
+    compact_q = re.sub(r"\s+", "", q)
+    compact_h = re.sub(r"\s+", "", h)
+    if compact_q and compact_h:
+        if len(compact_h) > 5000:
+            idx = compact_h.find(compact_q[: max(2, min(len(compact_q), 12))])
+            if idx >= 0:
+                start = max(0, idx - 800)
+                compact_h = compact_h[start:start + 2000]
+            else:
+                compact_h = compact_h[:5000]
+        fuzzy_score = SequenceMatcher(None, compact_q, compact_h).ratio()
+
+    mode = str(mode or "auto").lower()
+    if mode == "keyword":
+        return keyword_score
+    if mode == "semantic":
+        return semantic_score
+    return max(keyword_score, semantic_score * 8.0, fuzzy_score * 5.0)
+
+
+def _conversation_snippet(text, query, limit=260):
+    raw = _message_text(text)
+    flat = re.sub(r"\s+", " ", raw).strip()
+    if len(flat) <= limit:
+        return flat
+    q = _search_norm(query)
+    lower = flat.lower()
+    idx = lower.find(q) if q else -1
+    if idx < 0:
+        terms = [t for t in re.split(r"\s+", q) if t]
+        idxs = [lower.find(t) for t in terms if lower.find(t) >= 0]
+        idx = min(idxs) if idxs else 0
+    start = max(0, idx - limit // 3)
+    end = min(len(flat), start + limit)
+    start = max(0, end - limit)
+    prefix = "..." if start > 0 else ""
+    suffix = "..." if end < len(flat) else ""
+    return prefix + flat[start:end].strip() + suffix
+
+
 def _write_conversation_file(kind, path, data):
     data = _normalize_conversation_doc(data)
     if kind == "current":
@@ -1296,6 +1731,68 @@ def _sync_agent_context_from_conversation(data):
             backend.history = llm_history
     except Exception:
         pass
+
+
+def _sync_agent_from_session(sess):
+    data = _normalize_conversation_doc(sess.data)
+    messages = data.get("messages") or []
+    summary = data.get("summary") or _conversation_summary(messages)
+    history_info = [f"[Agent] 当前多会话上下文：{summary}"]
+    for msg in messages[-24:]:
+        role = msg.get("role")
+        content = _message_preview(msg, 360)
+        if not content:
+            continue
+        if role == "user":
+            history_info.append(f"[USER]: {content}")
+        elif role == "assistant":
+            history_info.append(f"[Agent] {content}")
+    try:
+        sess.agent.history = history_info
+    except Exception:
+        pass
+
+    llm_history = []
+    if summary:
+        llm_history.append({
+            "role": "user",
+            "content": [{"type": "text", "text": f"以下是当前会话的压缩上下文，后续回答应延续该上下文：\n{summary}"}],
+        })
+        llm_history.append({
+            "role": "assistant",
+            "content": [{"type": "text", "text": "已读取当前会话上下文，将在后续对话中延续。"}],
+        })
+    for msg in messages[-8:]:
+        role = msg.get("role")
+        if role not in ("user", "assistant"):
+            continue
+        text = _message_preview(msg, 2000)
+        if text:
+            llm_history.append({"role": role, "content": [{"type": "text", "text": text}]})
+    try:
+        backend = getattr(getattr(sess.agent, "llmclient", None), "backend", None)
+        if backend is not None:
+            backend.history = llm_history
+    except Exception:
+        pass
+
+
+def _append_session_conversation(sess, role, content, source="user", run_id=None, request_id=None):
+    if not isinstance(content, str) or not content:
+        return
+    with sess.lock:
+        sess.data.setdefault("messages", []).append({
+            "id": uuid.uuid4().hex,
+            "role": role,
+            "content": content,
+            "source": source,
+            "run_id": run_id or "",
+            "request_id": request_id or "",
+            "timestamp": time.strftime("%H:%M:%S"),
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+        })
+        sess.data = _normalize_conversation_doc(sess.data)
+        session_manager._save(sess)
 
 
 def _archive_current_conversation(reason="new_conversation"):
@@ -1675,6 +2172,73 @@ def process_agent_output(display_queue, source="user", prompt_text=None, run_id=
         if not finished_normally and not getattr(state.agent, "is_running", False):
             broadcast_state("idle", "run finished")
 
+
+def process_session_agent_output(sess, display_queue, source="user", prompt_text=None, run_id=None, cancel_event=None, request_id=None):
+    finished_normally = False
+
+    def emit(payload):
+        payload["session_id"] = sess.id
+        stream_manager.broadcast(json.dumps(payload))
+
+    def broadcast_state(state_name, reason=""):
+        sess.status = state_name
+        payload = {
+            "type": "state",
+            "state": state_name,
+            "source": source,
+            "run_id": run_id,
+            "request_id": request_id,
+            "session_id": sess.id,
+        }
+        if reason:
+            payload["reason"] = reason
+        _debug_log("session_state", session_id=sess.id, state=state_name, source=source, run_id=run_id, request_id=request_id, reason=reason)
+        stream_manager.broadcast(json.dumps(payload))
+
+    if prompt_text:
+        _debug_log("session_message", phase="prompt", session_id=sess.id, source=source, run_id=run_id, request_id=request_id, prompt_len=len(prompt_text))
+        emit({
+            "type": "message",
+            "role": "user",
+            "content": prompt_text,
+            "source": source,
+            "run_id": run_id,
+            "request_id": request_id,
+            "timestamp": time.strftime("%H:%M:%S"),
+        })
+        _append_session_conversation(sess, "user", prompt_text, source=source, run_id=run_id, request_id=request_id)
+
+    emit({"type": "start", "source": source, "run_id": run_id, "request_id": request_id})
+    broadcast_state("running", "stream start")
+    try:
+        while True:
+            if cancel_event is not None and cancel_event.is_set():
+                emit({"type": "done", "content": "", "source": source, "run_id": run_id, "request_id": request_id, "stopped": True})
+                break
+            try:
+                item = display_queue.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            if "next" in item:
+                if cancel_event is None or not cancel_event.is_set():
+                    chunk_text = item.get("next", "")
+                    emit({"type": "chunk", "content": chunk_text, "source": source, "run_id": run_id, "request_id": request_id})
+            if "done" in item:
+                if cancel_event is None or not cancel_event.is_set():
+                    done_text = item.get("done", "")
+                    if _looks_like_human_request(done_text):
+                        broadcast_state("need-user", "done suggests human input")
+                    else:
+                        broadcast_state("idle", "stream done")
+                    finished_normally = True
+                    emit({"type": "done", "content": done_text, "source": source, "run_id": run_id, "request_id": request_id})
+                    _append_session_conversation(sess, "assistant", done_text, source=source, run_id=run_id, request_id=request_id)
+                break
+    finally:
+        session_manager.finish_run(sess, run_id)
+        if not finished_normally and not getattr(sess.agent, "is_running", False):
+            broadcast_state("idle", "run finished")
+
 # Global State
 class AppState:
     def __init__(self):
@@ -1745,12 +2309,192 @@ class FallbackAgent:
         return None
     def run(self):
         return None
-    def put_task(self, query, source="user"):
+    def put_task(self, query, source="user", images=None):
         q = queue.Queue()
         q.put({"done": f"服务初始化失败：{self._err}"})
         return q
 
 state = AppState()
+
+
+class ChatSession:
+    def __init__(self, data=None):
+        data = _normalize_conversation_doc(data or _new_conversation_doc())
+        self.id = str(data.get("session_id") or uuid.uuid4().hex)
+        data["session_id"] = self.id
+        self.data = data
+        self.agent = None
+        self.agent_init_error = None
+        self.thread = None
+        self.status = "idle"
+        self.active_runs = {}
+        self.lock = threading.RLock()
+
+
+class ChatSessionManager:
+    def __init__(self):
+        self.sessions = {}
+        self.active_session_id = ""
+        self.lock = threading.RLock()
+
+    def _path(self, session_id):
+        safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(session_id or "session"))[:64]
+        return os.path.join(_live_conversation_dir(), f"{safe}.json")
+
+    def _save(self, sess):
+        data = _normalize_conversation_doc(sess.data)
+        data["status"] = sess.status
+        path = self._path(sess.id)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
+
+    def _load_live(self):
+        for name in sorted(os.listdir(_live_conversation_dir())):
+            if not name.endswith(".json"):
+                continue
+            path = os.path.join(_live_conversation_dir(), name)
+            try:
+                data = _read_conversation_file(path)
+            except Exception:
+                continue
+            sid = str(data.get("session_id") or os.path.splitext(name)[0])
+            if sid not in self.sessions:
+                self.sessions[sid] = ChatSession(data)
+
+    def ensure_started(self):
+        with self.lock:
+            self._load_live()
+            if not self.sessions:
+                sess = ChatSession()
+                self.sessions[sess.id] = sess
+                self.active_session_id = sess.id
+                self._save(sess)
+            elif not self.active_session_id or self.active_session_id not in self.sessions:
+                self.active_session_id = next(iter(self.sessions))
+            return self.active_session_id
+
+    def list(self):
+        self.ensure_started()
+        with self.lock:
+            out = []
+            for sess in self.sessions.values():
+                payload = _conversation_session_payload(sess.data, path=self._path(sess.id), current=(sess.id == self.active_session_id))
+                payload["status"] = sess.status
+                payload["active"] = sess.id == self.active_session_id
+                out.append(payload)
+            out.sort(key=lambda x: (not x.get("active"), x.get("updated_at") or ""), reverse=False)
+            return out
+
+    def get(self, session_id=None):
+        self.ensure_started()
+        sid = str(session_id or self.active_session_id or "")
+        with self.lock:
+            sess = self.sessions.get(sid)
+            if sess is None:
+                raise KeyError(sid)
+            return sess
+
+    def create(self, title=""):
+        with self.lock:
+            data = _new_conversation_doc()
+            if title:
+                data["title"] = str(title)[:80]
+                data["title_locked"] = True
+            sess = ChatSession(data)
+            self.sessions[sess.id] = sess
+            self.active_session_id = sess.id
+            self._save(sess)
+            return sess
+
+    def activate(self, session_id):
+        sess = self.get(session_id)
+        with self.lock:
+            self.active_session_id = sess.id
+        return sess
+
+    def delete(self, session_id):
+        self.ensure_started()
+        sid = str(session_id or "")
+        with self.lock:
+            sess = self.sessions.get(sid)
+            if sess is None:
+                raise KeyError(sid)
+            was_active = sid == self.active_session_id
+            self.cancel(sess)
+            self.sessions.pop(sid, None)
+            try:
+                path = self._path(sid)
+                if os.path.exists(path):
+                    os.remove(path)
+            except Exception as e:
+                _debug_log("session_delete_file_failed", session_id=sid, error=str(e))
+            next_id = ""
+            if self.sessions:
+                if was_active or self.active_session_id not in self.sessions:
+                    self.active_session_id = next(iter(self.sessions))
+                next_id = self.active_session_id
+            else:
+                next_sess = ChatSession()
+                self.sessions[next_sess.id] = next_sess
+                self.active_session_id = next_sess.id
+                self._save(next_sess)
+                next_id = next_sess.id
+            return next_id
+
+    def _make_agent(self, sess):
+        if state.agent_init_error:
+            return FallbackAgent(state.agent_init_error), state.agent_init_error
+        try:
+            importlib.invalidate_caches()
+            import agentmain
+            agent = agentmain.GeneraticAgent()
+            agent.inc_out = True
+            threading.Thread(target=agent.run, daemon=True, name=f"a3-session-{sess.id[:8]}").start()
+            return agent, None
+        except Exception as e:
+            return FallbackAgent(str(e)), str(e)
+
+    def ensure_agent(self, sess):
+        with sess.lock:
+            if sess.agent is None:
+                sess.agent, sess.agent_init_error = self._make_agent(sess)
+                _sync_agent_from_session(sess)
+            return sess.agent
+
+    def new_run(self, sess):
+        run_id = uuid.uuid4().hex
+        cancel_event = threading.Event()
+        with sess.lock:
+            sess.active_runs[run_id] = cancel_event
+            sess.status = "running"
+        return run_id, cancel_event
+
+    def finish_run(self, sess, run_id):
+        with sess.lock:
+            sess.active_runs.pop(run_id, None)
+            if not sess.active_runs and sess.status == "running":
+                sess.status = "idle"
+            self._save(sess)
+
+    def cancel(self, sess):
+        with sess.lock:
+            for ev in sess.active_runs.values():
+                try:
+                    ev.set()
+                except Exception:
+                    pass
+            if sess.agent and hasattr(sess.agent, "abort"):
+                try:
+                    sess.agent.abort()
+                except Exception:
+                    pass
+            sess.status = "idle"
+            self._save(sess)
+
+
+session_manager = ChatSessionManager()
 
 def init_agent():
     try:
@@ -1902,6 +2646,7 @@ def get_status():
             "idle_time": idle_time,
             "last_activity_time": state.last_activity_time,
             "agent_init_error": state.agent_init_error
+            , "pending_interventions": bool(getattr(state.agent, "has_pending_interventions", lambda: False)())
             , "needs_human_input": state.needs_human_input
             , "human_question": state.human_question
             , "human_candidates": state.human_candidates
@@ -1920,6 +2665,7 @@ def get_status():
             "idle_time": 0,
             "last_activity_time": state.last_activity_time,
             "agent_init_error": state.agent_init_error,
+            "pending_interventions": False,
             "needs_human_input": state.needs_human_input,
             "status_error": str(e)
         }
@@ -1947,6 +2693,515 @@ def get_history_raw():
         "archive_json": archive_data,
         "archive_raw": archive_raw,
     }
+
+
+@app.post("/api/uploads/images")
+async def upload_images(request: Request):
+    data = await request.json()
+    items = data.get("images") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        return JSONResponse(status_code=400, content={"error": "images must be a list"})
+    saved = []
+    for item in items[:12]:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name") or item.get("filename") or "image.png"
+        data_url = item.get("data_url") or item.get("dataUrl") or item.get("data")
+        mime = str(item.get("mime") or item.get("type") or "image/png")
+        blob, detected_mime = _decode_image_data_url(data_url, mime)
+        if not blob:
+            continue
+        if len(blob) > 15 * 1024 * 1024:
+            return JSONResponse(status_code=413, content={"error": f"image too large: {name}"})
+        path = _safe_upload_image_path(name)
+        guessed_ext = mimetypes.guess_extension(detected_mime or mime or "") or ""
+        if guessed_ext.lower() in (".png", ".jpg", ".jpeg", ".gif", ".webp") and not path.lower().endswith(guessed_ext.lower()):
+            path = os.path.splitext(path)[0] + guessed_ext.lower()
+        with open(path, "wb") as f:
+            f.write(blob)
+        saved.append({
+            "id": uuid.uuid4().hex,
+            "name": os.path.basename(path),
+            "path": path,
+            "mime": detected_mime or mime,
+            "size": len(blob),
+        })
+    return {"status": "saved", "images": saved}
+
+
+@app.get("/api/sessions")
+def list_live_sessions():
+    return {
+        "sessions": session_manager.list(),
+        "active_session_id": session_manager.active_session_id,
+    }
+
+
+@app.post("/api/sessions")
+async def create_live_session(request: Request):
+    data = await request.json()
+    sess = session_manager.create(title=str(data.get("title") or "").strip())
+    return {
+        "status": "created",
+        "session": _conversation_session_payload(sess.data, path=session_manager._path(sess.id), current=True),
+        "active_session_id": sess.id,
+    }
+
+
+@app.get("/api/sessions/{session_id}")
+def get_live_session(session_id: str):
+    try:
+        sess = session_manager.get(session_id)
+    except KeyError:
+        return JSONResponse(status_code=404, content={"error": "session not found"})
+    payload = _conversation_session_payload(sess.data, path=session_manager._path(sess.id), current=(sess.id == session_manager.active_session_id))
+    payload["messages"] = sess.data.get("messages") or []
+    payload["status"] = sess.status
+    return payload
+
+
+@app.post("/api/sessions/{session_id}/activate")
+async def activate_live_session(session_id: str):
+    try:
+        sess = session_manager.activate(session_id)
+    except KeyError:
+        return JSONResponse(status_code=404, content={"error": "session not found"})
+    return {"status": "active", "active_session_id": sess.id}
+
+
+@app.delete("/api/sessions/{session_id}")
+async def delete_live_session(session_id: str):
+    try:
+        next_id = session_manager.delete(session_id)
+    except KeyError:
+        return JSONResponse(status_code=404, content={"error": "session not found"})
+    return {
+        "status": "deleted",
+        "deleted_session_id": session_id,
+        "active_session_id": next_id,
+        "sessions": session_manager.list(),
+    }
+
+
+@app.post("/api/sessions/{session_id}/chat")
+async def chat_live_session(session_id: str, request: Request):
+    try:
+        sess = session_manager.get(session_id)
+    except KeyError:
+        return JSONResponse(status_code=404, content={"error": "session not found"})
+    data = await request.json()
+    prompt = data.get("prompt")
+    request_id = data.get("request_id")
+    raw_images = data.get("images") or []
+    image_paths = []
+    if isinstance(raw_images, list):
+        for item in raw_images[:12]:
+            path = item.get("path") if isinstance(item, dict) else item
+            if not isinstance(path, str) or not path:
+                continue
+            ap = os.path.abspath(path)
+            if os.path.isfile(ap):
+                image_paths.append(ap)
+    if not prompt:
+        return JSONResponse(status_code=400, content={"error": "No prompt provided"})
+    agent = session_manager.ensure_agent(sess)
+    if getattr(agent, "is_running", False):
+        return JSONResponse(status_code=409, content={"error": "session is already running"})
+    prompt_for_display = prompt
+    if image_paths:
+        prompt_for_display = prompt.rstrip() + "\n\n" + "\n".join(f"![{os.path.basename(p)}]({p})" for p in image_paths)
+    state.last_activity_time = time.time()
+    display_queue = agent.put_task(prompt, source="user", images=image_paths)
+    run_id, cancel_event = session_manager.new_run(sess)
+    _debug_log("session_chat_queued", session_id=sess.id, run_id=run_id, request_id=request_id, prompt_len=len(prompt), image_count=len(image_paths))
+    threading.Thread(target=process_session_agent_output, args=(sess, display_queue, "user", prompt_for_display, run_id, cancel_event, request_id), daemon=True).start()
+    return {"status": "queued", "session_id": sess.id, "run_id": run_id, "request_id": request_id}
+
+
+@app.post("/api/sessions/{session_id}/cancel")
+async def cancel_live_session(session_id: str):
+    try:
+        sess = session_manager.get(session_id)
+    except KeyError:
+        return JSONResponse(status_code=404, content={"error": "session not found"})
+    session_manager.cancel(sess)
+    return {"status": "cancelled", "session_id": sess.id}
+
+
+@app.get("/api/goal/status")
+def get_goal_status():
+    return _goal_payload()
+
+
+@app.post("/api/goal/start")
+async def start_goal_mode(request: Request):
+    data = await request.json()
+    objective = str(data.get("objective") or "").strip()
+    if not objective:
+        return JSONResponse(status_code=400, content={"error": "objective is required"})
+    budget_minutes = float(data.get("budget_minutes") or 30)
+    budget_minutes = max(1, min(budget_minutes, 24 * 60))
+    max_turns = int(data.get("max_turns") or 80)
+    max_turns = max(1, min(max_turns, 500))
+    done_prompt = str(data.get("done_prompt") or "").strip()
+
+    if _goal_proc_alive():
+        return JSONResponse(status_code=409, content={"error": "goal mode is already running", **_goal_payload()})
+
+    state_doc = {
+        "objective": objective,
+        "budget_seconds": int(budget_minutes * 60),
+        "start_time": time.time(),
+        "turns_used": 0,
+        "max_turns": max_turns,
+        "status": "running",
+        "done_prompt": done_prompt,
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    state_path = _goal_state_path()
+    log_path = _goal_log_path()
+    try:
+        proc = _start_goal_reflect_process(state_doc, state_path, log_path)
+        goal_process.update({"proc": proc, "state_path": state_path, "started_at": time.time()})
+    except Exception as e:
+        state_doc["status"] = "error"
+        state_doc["error"] = str(e)
+        with open(state_path, "w", encoding="utf-8") as f:
+            json.dump(state_doc, f, ensure_ascii=False, indent=2)
+        return JSONResponse(status_code=500, content={"error": str(e), **_goal_payload()})
+    return {"status": "started", **_goal_payload()}
+
+
+@app.post("/api/goal/stop")
+async def stop_goal_mode():
+    _stop_goal_process("stopped")
+    return {"status": "stopped", **_goal_payload()}
+
+
+HIVE_MASTER_DUTY = """Hive Master 职责：
+1. 你**负责任务调度和团队组织**，不允许亲自干活导致 worker 空转，耗时执行与复杂复核应拆给 worker
+2. 终极目标是要做到**完美的找不到任何问题的**任务交付结果，保证用户满意，围绕核心产出（不太需要额外产出）
+3. 针对任务目标设计要做的子任务，发到bbs上，worker会接任务并完成
+4. 如果子任务很多，worker做不过来，可以参照Goal Hive Mode SOP拉起更多worker
+5. 只要时间没到，就持续验收结果、检查问题、寻找下一个改进点，并继续设计新子任务
+6. 时间没到不允许交付，必须头脑风暴找改进点和检查点，也可发动worker一起寻找改进点
+7. BBS 中 human 发出的 @master、@hive-master、@all 是高优先级人工干预，必须优先回应并据此调整计划；@worker-N 指令要转发/协调给对应 worker"""
+
+HIVE_DONE_PROMPT = "关闭所有你拉起的worker，并在BBS发一条帖子，宣告你管理的任务结束，worker除了明确追加任务外，不应再回应。"
+
+
+def _hive_http_json(url, payload, key):
+    import urllib.request
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json", "X-API-Key": key})
+    with urllib.request.urlopen(req, timeout=8) as resp:
+        raw = resp.read().decode("utf-8")
+    return json.loads(raw) if raw else {}
+
+
+def _hive_http_get_json(url, key):
+    import urllib.request
+    req = urllib.request.Request(url, headers={"X-API-Key": key})
+    with urllib.request.urlopen(req, timeout=8) as resp:
+        raw = resp.read().decode("utf-8")
+    return json.loads(raw) if raw else []
+
+
+def _hive_target_procs(target):
+    target = str(target or "all").lower().strip()
+    procs = []
+    if target in ("all", "master", "hive-master"):
+        procs.append(("master", hive_process.get("master")))
+    workers = hive_process.get("workers") or []
+    if target in ("all", "workers", "worker", "all-workers"):
+        procs.extend((f"worker-{i}", p) for i, p in enumerate(workers, start=1))
+    else:
+        m = re.match(r"worker[-_]?(\d+)$", target)
+        if m:
+            idx = int(m.group(1)) - 1
+            if 0 <= idx < len(workers):
+                procs.append((f"worker-{idx + 1}", workers[idx]))
+    return [(name, proc) for name, proc in procs if _proc_alive(proc)]
+
+
+def _hive_post_system(content):
+    data = _read_json_file(_hive_state_path()) or {}
+    base_url = data.get("base_url")
+    board_key = data.get("board_key")
+    if not base_url or not board_key or not content:
+        return
+    try:
+        token = data.get("control_token")
+        if not token:
+            token = _hive_http_json(f"{base_url}/register", {"name": "human-control"}, board_key).get("token")
+            data["control_token"] = token
+            _write_hive_state(data)
+        _hive_http_json(f"{base_url}/post", {"token": token, "content": content}, board_key)
+    except Exception:
+        pass
+
+
+@app.get("/api/hive/status")
+def get_hive_status():
+    return _hive_payload()
+
+
+@app.get("/api/hive/posts")
+def get_hive_posts(limit: int = 50):
+    data = _read_json_file(_hive_state_path()) or {}
+    base_url = data.get("base_url")
+    board_key = data.get("board_key")
+    if not base_url or not board_key:
+        return {"posts": [], "bbs_url": "", "error": ""}
+    if data.get("status") in ("stopped", "done_budget", "done", "error") and not _hive_payload().get("bbs_running"):
+        return {"posts": [], "bbs_url": data.get("bbs_url") or "", "error": "", "offline": True}
+    try:
+        posts = _hive_http_get_json(f"{base_url}/posts?limit={max(1, min(int(limit or 50), 200))}", board_key)
+        posts = list(reversed(posts)) if isinstance(posts, list) else []
+        return {"posts": posts, "bbs_url": data.get("bbs_url") or f"{base_url}/?key={board_key}", "error": ""}
+    except Exception as e:
+        msg = str(e)
+        if "Connection refused" in msg or "Errno 61" in msg or "timed out" in msg:
+            return {"posts": [], "bbs_url": data.get("bbs_url") or "", "error": "", "offline": True}
+        return {"posts": [], "bbs_url": data.get("bbs_url") or "", "error": msg}
+
+
+@app.post("/api/hive/start")
+async def start_hive_mode(request: Request):
+    data = await request.json()
+    objective = str(data.get("objective") or "").strip()
+    if not objective:
+        return JSONResponse(status_code=400, content={"error": "objective is required"})
+    if _hive_payload().get("running"):
+        return JSONResponse(status_code=409, content={"error": "hive mode is already running", **_hive_payload()})
+    if _goal_proc_alive():
+        return JSONResponse(status_code=409, content={"error": "goal mode is already running; stop it before starting hive", **_goal_payload()})
+
+    budget_minutes = max(1, min(float(data.get("budget_minutes") or 30), 24 * 60))
+    max_turns = max(1, min(int(data.get("max_turns") or 80), 500))
+    worker_count = max(1, min(int(data.get("worker_count") or 1), 6))
+    port = int(data.get("port") or _free_port())
+    board_key = "hive_" + uuid.uuid4().hex[:12]
+    base_url = f"http://127.0.0.1:{port}"
+    hive_root = os.path.join(_hive_dir(), "workspace")
+    output_dir = os.path.join(hive_root, "outputs")
+    os.makedirs(hive_root, exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True)
+
+    state_doc = {
+        "objective": objective,
+        "status": "starting",
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "budget_minutes": budget_minutes,
+        "max_turns": max_turns,
+        "worker_count": worker_count,
+        "port": port,
+        "base_url": base_url,
+        "board_key": board_key,
+        "hive_root": hive_root,
+        "output_dir": output_dir,
+        "bbs_url": f"{base_url}/?key={board_key}",
+        "logs": {
+            "bbs": _hive_log_path("bbs"),
+            "master": _hive_log_path("master"),
+            "workers": [_hive_log_path(f"worker_{i}") for i in range(1, worker_count + 1)],
+        }
+    }
+    _write_hive_state(state_doc)
+
+    try:
+        bbs_log = open(_hive_log_path("bbs"), "a", encoding="utf-8")
+        bbs_proc = subprocess.Popen(
+            [sys.executable, os.path.join(BASE_DIR, "assets", "agent_bbs.py"), "--cwd", hive_root, "--port", str(port), "--key", board_key],
+            cwd=BASE_DIR,
+            stdout=bbs_log,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+        hive_process.update({"bbs": bbs_proc, "workers": [], "master": None, "state_path": _hive_state_path(), "started_at": time.time()})
+        time.sleep(1.0)
+
+        token = _hive_http_json(f"{base_url}/register", {"name": "hive-seed"}, board_key).get("token")
+        state_doc["seed_token"] = token
+        _write_hive_state(state_doc)
+        first_post = (
+            f"任务目标：\n{objective}\n\n"
+            f"BBS：{base_url}/readme?key={board_key}\n"
+            f"工作目录：{hive_root}\n\n"
+            f"产出目录：{output_dir}\n\n"
+            f"{HIVE_MASTER_DUTY}\n\n"
+            "附加说明：此为最终目标，worker不要接单，先等hive master拆分子任务。"
+            "所有交付文件必须写入产出目录，BBS只写进度、分工、阻塞和最终清单。"
+        )
+        _hive_http_json(f"{base_url}/post", {"token": token, "content": first_post}, board_key)
+
+        workers = []
+        for i in range(1, worker_count + 1):
+            worker_log = open(_hive_log_path(f"worker_{i}"), "a", encoding="utf-8")
+            proc = subprocess.Popen(
+                [
+                    sys.executable, os.path.join(BASE_DIR, "agentmain.py"),
+                    "--reflect", os.path.join(BASE_DIR, "reflect", "agent_team_worker.py"),
+                    "--base_url", base_url,
+                    "--board_key", board_key,
+                    "--name", f"hive-worker-{i}",
+                ],
+                cwd=hive_root,
+                env={**os.environ.copy(), "GA_HIVE_ROOT": hive_root, "GA_HIVE_OUTPUT_DIR": output_dir},
+                stdout=worker_log,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+            workers.append(proc)
+        hive_process["workers"] = workers
+
+        master_objective = (
+            f"{objective}\n\n"
+            f"BBS: {base_url}/readme?key={board_key}\n"
+            f"BBS_CWD: {hive_root}\n\n"
+            f"HIVE_OUTPUT_DIR: {output_dir}\n"
+            "所有最终产出、进度文件和交付文件必须写入 HIVE_OUTPUT_DIR；不要写到 A3Agent/temp 或当前项目根目录。\n"
+            "在 BBS 发帖请使用 /readme 中给出的 register/post JSON 示例，不要自行猜测 /posts 或 /api/posts。\n\n"
+            f"{HIVE_MASTER_DUTY}"
+        )
+        master_state_path = os.path.join(_hive_dir(), "master_goal_state.json")
+        master_state = {
+            "objective": master_objective,
+            "budget_seconds": int(budget_minutes * 60),
+            "start_time": time.time(),
+            "turns_used": 0,
+            "max_turns": max_turns,
+            "status": "running",
+            "done_prompt": HIVE_DONE_PROMPT,
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "hive": True,
+        }
+        master_proc = _start_goal_reflect_process(
+            master_state,
+            master_state_path,
+            _hive_log_path("master"),
+            cwd=hive_root,
+            extra_env={"GA_HIVE_ROOT": hive_root, "GA_HIVE_OUTPUT_DIR": output_dir},
+        )
+        hive_process["master"] = master_proc
+        state_doc.update({
+            "status": "running",
+            "master_goal_state_path": master_state_path,
+            "pids": {
+                "bbs": bbs_proc.pid,
+                "master": master_proc.pid,
+                "workers": [p.pid for p in workers],
+            }
+        })
+        _write_hive_state(state_doc)
+        return {"status": "started", **_hive_payload()}
+    except Exception as e:
+        state_doc["status"] = "error"
+        state_doc["error"] = str(e)
+        _write_hive_state(state_doc)
+        _stop_hive_processes("error")
+        return JSONResponse(status_code=500, content={"error": str(e), **_hive_payload()})
+
+
+@app.post("/api/hive/stop")
+async def stop_hive_mode():
+    _stop_hive_processes("stopped")
+    return {"status": "stopped", **_hive_payload()}
+
+
+@app.post("/api/hive/extend")
+async def extend_hive_mode(request: Request):
+    data = await request.json()
+    add_minutes = max(0.0, min(float(data.get("minutes") or 0), 24 * 60))
+    add_turns = max(0, min(int(data.get("turns") or 0), 500))
+    state_data = _read_json_file(_hive_state_path()) or {}
+    master_path = state_data.get("master_goal_state_path") or os.path.join(_hive_dir(), "master_goal_state.json")
+    master_state = _read_json_file(master_path) or {}
+    if not master_state:
+        return JSONResponse(status_code=400, content={"error": "master state is not available"})
+    if add_minutes:
+        master_state["budget_seconds"] = int(float(master_state.get("budget_seconds") or 0) + add_minutes * 60)
+        state_data["budget_minutes"] = round(float(state_data.get("budget_minutes") or 0) + add_minutes, 2)
+    if add_turns:
+        master_state["max_turns"] = int(master_state.get("max_turns") or 0) + add_turns
+        state_data["max_turns"] = int(state_data.get("max_turns") or 0) + add_turns
+    if master_state.get("status") in ("done_budget", "wrapping_up"):
+        master_state["status"] = "running"
+        master_state.pop("end_time", None)
+        state_data["status"] = "running"
+        state_data.pop("end_time", None)
+    _write_hive_state(state_data)
+    with open(master_path, "w", encoding="utf-8") as f:
+        json.dump(master_state, f, ensure_ascii=False, indent=2)
+    _hive_post_system(f"@all [人工控制] 已追加 Hive 预算：+{add_minutes:g} 分钟，+{add_turns} 轮。Master 请重新评估剩余任务并继续/收口。")
+    return {"status": "extended", **_hive_payload()}
+
+
+@app.post("/api/hive/control")
+async def control_hive_agent(request: Request):
+    data = await request.json()
+    action = str(data.get("action") or "").lower().strip()
+    target = str(data.get("target") or "all").lower().strip()
+    if action not in ("pause", "resume", "stop"):
+        return JSONResponse(status_code=400, content={"error": "action must be pause, resume, or stop"})
+    targets = _hive_target_procs(target)
+    if not targets:
+        return JSONResponse(status_code=404, content={"error": f"no running target: {target}"})
+    state_data = _read_json_file(_hive_state_path()) or {}
+    paused = set(state_data.get("paused_targets") or [])
+    changed = []
+    sig = None
+    if action == "pause":
+        sig = signal.SIGSTOP
+    elif action == "resume":
+        sig = signal.SIGCONT
+    for name, proc in targets:
+        try:
+            if action == "stop":
+                _terminate_proc(proc)
+                paused.discard(name)
+            else:
+                os.kill(proc.pid, sig)
+                if action == "pause":
+                    paused.add(name)
+                else:
+                    paused.discard(name)
+            changed.append(name)
+        except Exception:
+            pass
+    state_data["paused_targets"] = sorted(paused)
+    if action == "stop":
+        state_data.setdefault("stopped_targets", [])
+        state_data["stopped_targets"] = sorted(set(state_data["stopped_targets"]) | set(changed))
+    _write_hive_state(state_data)
+    label = {"pause": "暂停", "resume": "继续", "stop": "停止"}[action]
+    _hive_post_system(f"@all [人工控制] 已{label}：{', '.join(changed) or target}。相关 agent 请按此状态调整，不要绕过人工控制。")
+    return {"status": action, "target": target, "changed": changed, **_hive_payload()}
+
+
+@app.post("/api/hive/post")
+async def post_hive_message(request: Request):
+    data = await request.json()
+    content = str(data.get("content") or "").strip()
+    author = str(data.get("author") or "human").strip() or "human"
+    if not content:
+        return JSONResponse(status_code=400, content={"error": "content is required"})
+    state_data = _read_json_file(_hive_state_path()) or {}
+    base_url = state_data.get("base_url")
+    board_key = state_data.get("board_key")
+    if not base_url or not board_key:
+        return JSONResponse(status_code=400, content={"error": "hive bbs is not available"})
+    try:
+        token = state_data.get("human_token")
+        if not token or state_data.get("human_author") != author:
+            token = _hive_http_json(f"{base_url}/register", {"name": author}, board_key).get("token")
+            state_data["human_token"] = token
+            state_data["human_author"] = author
+            _write_hive_state(state_data)
+        result = _hive_http_json(f"{base_url}/post", {"token": token, "content": content}, board_key)
+        return {"status": "posted", "post": result}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 
 @app.get("/api/conversation/current")
@@ -1980,6 +3235,58 @@ def list_conversations():
         archived.sort(key=lambda item: item.get("updated_at") or item.get("created_at") or "", reverse=True)
         sessions = current + archived
     return {"sessions": sessions, "root": _conversation_root_dir()}
+
+
+@app.get("/api/conversations/search")
+def search_conversations(q: str = "", mode: str = "auto", limit: int = 30):
+    query = str(q or "").strip()
+    mode_raw = str(mode or "auto").lower()
+    mode = mode_raw if mode_raw in ("auto", "keyword", "semantic") else "auto"
+    try:
+        limit = max(1, min(int(limit), 100))
+    except Exception:
+        limit = 30
+    if not query:
+        return {"query": query, "mode": mode, "results": []}
+
+    results = []
+    for kind, path in _conversation_file_candidates():
+        try:
+            data = _read_conversation_file(path)
+        except Exception as e:
+            _debug_log("conversation_search_read_failed", path=path, error=str(e))
+            continue
+        payload = _conversation_session_payload(data, path=path, current=(kind == "current"))
+        session_text = "\n".join([
+            str(payload.get("title") or ""),
+            str(payload.get("summary") or ""),
+            str(payload.get("last_preview") or ""),
+        ])
+        best_score = _conversation_search_score(query, session_text, mode)
+        matches = []
+        for idx, msg in enumerate(data.get("messages") or []):
+            content = _message_text(msg.get("content") if isinstance(msg, dict) else msg)
+            msg_score = _conversation_search_score(query, content, mode)
+            if msg_score <= 0:
+                continue
+            best_score = max(best_score, msg_score)
+            matches.append({
+                "message_index": idx,
+                "message_id": msg.get("id", "") if isinstance(msg, dict) else "",
+                "role": msg.get("role", "") if isinstance(msg, dict) else "",
+                "timestamp": msg.get("timestamp") or msg.get("created_at") or "" if isinstance(msg, dict) else "",
+                "snippet": _conversation_snippet(content, query),
+                "score": round(float(msg_score), 4),
+            })
+        if best_score <= 0:
+            continue
+        matches.sort(key=lambda x: x.get("score", 0), reverse=True)
+        payload["score"] = round(float(best_score), 4)
+        payload["matches"] = matches[:5]
+        results.append(payload)
+
+    results.sort(key=lambda item: (item.get("score", 0), item.get("updated_at") or ""), reverse=True)
+    return {"query": query, "mode": mode, "results": results[:limit]}
 
 
 @app.get("/api/conversations/{session_id}")
@@ -2150,22 +3457,35 @@ async def chat(request: Request):
     data = await request.json()
     prompt = data.get("prompt")
     request_id = data.get("request_id")
+    raw_images = data.get("images") or []
+    image_paths = []
+    if isinstance(raw_images, list):
+        for item in raw_images[:12]:
+            path = item.get("path") if isinstance(item, dict) else item
+            if not isinstance(path, str) or not path:
+                continue
+            ap = os.path.abspath(path)
+            if os.path.isfile(ap):
+                image_paths.append(ap)
     if not prompt:
         return {"error": "No prompt provided"}
-    _debug_log("chat_received", prompt_len=len(prompt), request_id=request_id, stopping=state.stopping, is_running=getattr(state.agent, "is_running", False))
+    prompt_for_display = prompt
+    if image_paths:
+        prompt_for_display = prompt.rstrip() + "\n\n" + "\n".join(f"![{os.path.basename(p)}]({p})" for p in image_paths)
+    _debug_log("chat_received", prompt_len=len(prompt), image_count=len(image_paths), request_id=request_id, stopping=state.stopping, is_running=getattr(state.agent, "is_running", False))
     
     # Update activity time
     state.last_activity_time = time.time()
     
     # Put task into agent's queue
-    display_queue = state.agent.put_task(prompt, source="user")
+    display_queue = state.agent.put_task(prompt, source="user", images=image_paths)
     run_id, cancel_event = state.new_run()
     _debug_log("chat_queued", run_id=run_id, request_id=request_id, prompt_len=len(prompt), stopping=state.stopping, is_running=getattr(state.agent, "is_running", False))
     
     # Start background task to broadcast output
     # Note: We pass prompt_text=prompt so it gets broadcasted back to all clients (including sender)
     # This simplifies frontend logic (just listen to stream)
-    threading.Thread(target=process_agent_output, args=(display_queue, "user", prompt, run_id, cancel_event, request_id), daemon=True).start()
+    threading.Thread(target=process_agent_output, args=(display_queue, "user", prompt_for_display, run_id, cancel_event, request_id), daemon=True).start()
     
     return {"status": "queued", "run_id": run_id, "request_id": request_id}
 
@@ -2580,11 +3900,10 @@ async def communication_config_action(request: Request):
 
 @app.get("/api/todo")
 def get_todo():
-    base = get_user_data_dir()
-    path = os.path.join(base, "ToDo.txt")
+    path, migrated_from = _ensure_todo_file()
     if os.path.exists(path):
-        return {"exists": True, "content": _read_text(path)}
-    return {"exists": False, "content": ""}
+        return {"exists": True, "content": _read_text(path), "path": path, "migrated_from": migrated_from}
+    return {"exists": False, "content": "", "path": path, "migrated_from": migrated_from}
 
 @app.post("/api/todo")
 async def save_todo(request: Request):
@@ -2592,10 +3911,9 @@ async def save_todo(request: Request):
     content = data.get("content")
     if not isinstance(content, str):
         return JSONResponse(status_code=400, content={"error": "content must be string"})
-    base = get_user_data_dir()
-    path = os.path.join(base, "ToDo.txt")
+    path, migrated_from = _ensure_todo_file()
     _write_text(path, content)
-    return {"status": "saved"}
+    return {"status": "saved", "path": path, "migrated_from": migrated_from}
 
 @app.get("/api/sop/list")
 def list_sops():

@@ -6,7 +6,10 @@ createApp({
         const inputMessage = ref('');
         const selectedModeIds = ref([]);
         const pendingGoalMode = ref(null);
-        const messages = ref([]);
+        const sessionMessages = ref({});
+        const chatSessions = ref([]);
+        const activeSessionId = ref('');
+        const messages = computed(() => sessionMessages.value[activeSessionId.value] || []);
         const isTyping = ref(false);
         const status = ref({ llm_name: '', is_running: false });
         const activeModal = ref('');
@@ -27,6 +30,11 @@ createApp({
         const historyLoading = ref(false);
         const historySavingTitle = ref(false);
         const historyError = ref('');
+        const historySearchQuery = ref('');
+        const historySearchResults = ref([]);
+        const historySearchLoading = ref(false);
+        const historySearchError = ref('');
+        const historySearchActive = computed(() => !!String(historySearchQuery.value || '').trim());
         const memoryFiles = ref([]);
         const selectedMemoryFile = ref('');
         const memoryContent = ref('');
@@ -83,7 +91,44 @@ createApp({
         const interventionNotice = ref('');
         const interventionError = ref('');
         const interventionSaving = ref(false);
+        const attachedImages = ref([]);
+        const attachmentError = ref('');
+        const attachmentUploading = ref(false);
+        const fileInputRef = ref(null);
         const isComposing = ref(false);
+        const goalState = ref(null);
+        const goalObjective = ref('');
+        const goalBudgetMinutes = ref(30);
+        const goalMaxTurns = ref(80);
+        const goalDonePrompt = ref('');
+        const goalLoading = ref(false);
+        const goalNotice = ref('');
+        const goalError = ref('');
+        const hiveState = ref(null);
+        const hiveObjective = ref('');
+        const hiveBudgetMinutes = ref(30);
+        const hiveMaxTurns = ref(80);
+        const hiveWorkerCount = ref(2);
+        const hiveLoading = ref(false);
+        const hiveNotice = ref('');
+        const hiveError = ref('');
+        const orchestrationTab = ref('goal');
+        const hivePosts = ref([]);
+        const hivePostsLoading = ref(false);
+        const hivePostsError = ref('');
+        const hiveBbsOffline = ref(false);
+        const hiveBbsUrl = ref('');
+        const hivePostAuthor = ref('human');
+        const hivePostContent = ref('');
+        const hivePosting = ref(false);
+        const hiveAutoRefresh = ref(true);
+        const hivePostFilter = ref('all');
+        const hivePostSearch = ref('');
+        const hiveControlTarget = ref('all');
+        const hiveExtendMinutes = ref(10);
+        const hiveExtendTurns = ref(20);
+        const hiveBbsComposerOpen = ref(false);
+        const hiveExpandedPosts = ref({});
         const renderLimit = ref(120);
         const stickToBottom = ref(true);
         let loadingMoreHistory = false;
@@ -95,6 +140,22 @@ createApp({
         const visibleMessages = computed(() => {
             const start = Math.max(0, messages.value.length - renderLimit.value);
             return messages.value.slice(start);
+        });
+        const hiveFilteredPosts = computed(() => {
+            const role = hivePostFilter.value || 'all';
+            const q = String(hivePostSearch.value || '').trim().toLowerCase();
+            return (hivePosts.value || []).filter((post) => {
+                const author = String(post.author || '').toLowerCase();
+                const content = String(post.content || '').toLowerCase();
+                const roleOk =
+                    role === 'all' ||
+                    (role === 'master' && author.includes('master')) ||
+                    (role === 'worker' && author.includes('worker')) ||
+                    (role === 'human' && (author.includes('human') || author.includes('user'))) ||
+                    (role === 'system' && (author.includes('seed') || author.includes('system')));
+                const qOk = !q || author.includes(q) || content.includes(q);
+                return roleOk && qOk;
+            });
         });
 
         const workspacePath = ref("");
@@ -204,6 +265,18 @@ createApp({
         const submitInFlight = ref(false);
         const pendingSubmissions = new Map();
         let currentSubmitAbortController = null;
+        const runningSessionIds = ref(new Set());
+        const activeSessionRunning = computed(() => !!(activeSessionId.value && runningSessionIds.value.has(activeSessionId.value)));
+        const updateRunningSession = (sessionId, running) => {
+            if (!sessionId) return;
+            const next = new Set(runningSessionIds.value);
+            if (running) next.add(sessionId);
+            else next.delete(sessionId);
+            runningSessionIds.value = next;
+            chatSessions.value = chatSessions.value.map((s) => (
+                s.session_id === sessionId ? { ...s, status: running ? 'running' : (s.status === 'running' ? 'idle' : s.status) } : s
+            ));
+        };
         const pushStreamDebug = (kind, detail = {}) => {
             const entry = {
                 ts: new Date().toLocaleTimeString(),
@@ -338,6 +411,14 @@ createApp({
                     await ensureBackendDataLoaded();
                 }
             }, 5000);
+            setInterval(async () => {
+                if (activeModal.value === 'orchestration' && orchestrationTab.value === 'hive' && hiveAutoRefresh.value) {
+                    await fetchHiveStatus();
+                    await fetchHivePosts();
+                } else if (!activeModal.value) {
+                    await fetchHiveStatus();
+                }
+            }, 5000);
 
             if (!sseWatchdogTimer) {
                 sseWatchdogTimer = setInterval(() => {
@@ -455,23 +536,170 @@ createApp({
             return msg;
         };
 
-        const fetchCurrentConversation = async () => {
+        const setSessionMessages = (sessionId, items) => {
+            if (!sessionId) return;
+            sessionMessages.value = {
+                ...sessionMessages.value,
+                [sessionId]: Array.isArray(items) ? items : []
+            };
+        };
+
+        const pushSessionMessage = (sessionId, msg) => {
+            const sid = sessionId || activeSessionId.value;
+            if (!sid || !msg) return -1;
+            const list = [...(sessionMessages.value[sid] || []), msg];
+            setSessionMessages(sid, list);
+            return list.length - 1;
+        };
+
+        const updateSessionMessage = (sessionId, index, updater) => {
+            const sid = sessionId || activeSessionId.value;
+            const list = [...(sessionMessages.value[sid] || [])];
+            if (index < 0 || index >= list.length) return null;
+            const msg = list[index];
+            if (typeof updater === 'function') updater(msg);
+            list[index] = msg;
+            setSessionMessages(sid, list);
+            return msg;
+        };
+
+        const hasLiveRunForSession = (sessionId) => {
+            if (!sessionId) return false;
+            for (const st of runStates.values()) {
+                if (st && st.sessionId === sessionId) return true;
+            }
+            return false;
+        };
+
+        const normalizeSessionPayloadMessages = (items) => {
+            return (Array.isArray(items) ? items : [])
+                .filter((item) => item && (item.role === 'user' || item.role === 'assistant'))
+                .map((item) => makeMessage(item.role, item.content || '', {
+                    timestamp: item.timestamp || item.created_at || '',
+                    source: item.source,
+                    run_id: item.run_id
+                }));
+        };
+
+        const fetchSessions = async () => {
             try {
-                const res = await fetch('/api/conversation/current');
+                const res = await fetch('/api/sessions');
                 if (!res.ok) return false;
                 const data = await res.json();
-                const items = Array.isArray(data.messages) ? data.messages : [];
-                messages.value = items
-                    .filter((item) => item && (item.role === 'user' || item.role === 'assistant'))
-                    .map((item) => makeMessage(item.role, item.content || '', {
-                        timestamp: item.timestamp || item.created_at || '',
-                        source: item.source,
-                        run_id: item.run_id
-                    }));
-                renderLimit.value = Math.min(renderMax, Math.max(120, messages.value.length || 120));
-                await nextTick();
-                scrollToBottom();
+                chatSessions.value = Array.isArray(data.sessions) ? data.sessions : [];
+                runningSessionIds.value = new Set(chatSessions.value.filter((s) => s.status === 'running').map((s) => s.session_id));
+                const nextId = data.active_session_id || activeSessionId.value || ((chatSessions.value[0] || {}).session_id || '');
+                if (nextId && nextId !== activeSessionId.value) {
+                    await switchChatSession(nextId, false);
+                } else if (nextId && !sessionMessages.value[nextId]) {
+                    await loadChatSession(nextId);
+                }
                 return true;
+            } catch (e) {
+                console.error('Fetch sessions failed:', e);
+                return false;
+            }
+        };
+
+        const loadChatSession = async (sessionId) => {
+            if (!sessionId) return false;
+            try {
+                const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`);
+                if (!res.ok) return false;
+                const data = await res.json();
+                setSessionMessages(sessionId, normalizeSessionPayloadMessages(data.messages));
+                const idx = chatSessions.value.findIndex((s) => s.session_id === sessionId);
+                const meta = {
+                    session_id: data.session_id,
+                    title: data.title,
+                    summary: data.summary,
+                    updated_at: data.updated_at,
+                    message_count: data.message_count,
+                    status: data.status || 'idle',
+                    active: data.current
+                };
+                if (idx >= 0) {
+                    const list = [...chatSessions.value];
+                    list[idx] = { ...list[idx], ...meta };
+                    chatSessions.value = list;
+                }
+                return true;
+            } catch (e) {
+                console.error('Load chat session failed:', e);
+                return false;
+            }
+        };
+
+        const switchChatSession = async (sessionId, activate = true) => {
+            if (!sessionId) return;
+            if (activate) {
+                try {
+                    await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/activate`, { method: 'POST' });
+                } catch (e) {
+                    console.error('Activate session failed:', e);
+                }
+            }
+            activeSessionId.value = sessionId;
+            chatSessions.value = chatSessions.value.map((s) => ({ ...s, active: s.session_id === sessionId }));
+            isTyping.value = activeSessionRunning.value;
+            if (!hasLiveRunForSession(sessionId) || !(sessionMessages.value[sessionId] || []).length) {
+                await loadChatSession(sessionId);
+            }
+            renderLimit.value = Math.min(renderMax, Math.max(120, (sessionMessages.value[sessionId] || []).length || 120));
+            await nextTick();
+            scrollToBottom();
+        };
+
+        const createChatSession = async () => {
+            try {
+                const res = await fetch('/api/sessions', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({})
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+                await fetchSessions();
+                const sid = data.active_session_id || (data.session && data.session.session_id);
+                if (sid) await switchChatSession(sid, false);
+            } catch (e) {
+                console.error('Create session failed:', e);
+            }
+        };
+
+        const closeChatSession = async (sessionId, event) => {
+            if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
+            if (!sessionId) return;
+            const before = [...chatSessions.value];
+            const closingIndex = before.findIndex((s) => s.session_id === sessionId);
+            const wasActive = sessionId === activeSessionId.value;
+            const fallbackId = wasActive
+                ? ((before[closingIndex + 1] || before[closingIndex - 1] || {}).session_id || '')
+                : activeSessionId.value;
+            try {
+                const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+                const cache = { ...sessionMessages.value };
+                delete cache[sessionId];
+                sessionMessages.value = cache;
+                const nextSessions = Array.isArray(data.sessions) ? data.sessions : before.filter((s) => s.session_id !== sessionId);
+                chatSessions.value = nextSessions;
+                runningSessionIds.value = new Set(nextSessions.filter((s) => s.status === 'running').map((s) => s.session_id));
+                const nextId = data.active_session_id || fallbackId || ((nextSessions[0] || {}).session_id || '');
+                if (nextId) {
+                    await switchChatSession(nextId, false);
+                } else {
+                    await fetchSessions();
+                }
+            } catch (e) {
+                console.error('Close session failed:', e);
+            }
+        };
+
+        const fetchCurrentConversation = async () => {
+            try {
+                return await fetchSessions();
             } catch (e) {
                 console.error('Fetch current conversation failed:', e);
                 return false;
@@ -549,6 +777,16 @@ createApp({
                 sseReconnectTimer = null;
             }
             lastStreamSeenAt = Date.now();
+
+            if (window.location.protocol === 'file:' && !window.__BACKEND_PORT__) {
+                fetch('/api/status')
+                    .then(() => setTimeout(initStream, 50))
+                    .catch((e) => {
+                        pushStreamDebug('sse-port-wait', { error: String(e && e.message ? e.message : e) });
+                        if (!sseReconnectTimer) reconnectStream('backend-port-wait');
+                    });
+                return;
+            }
 	            
             eventSource = new EventSource('/api/stream');
             pushStreamDebug('sse-open', { readyState: eventSource.readyState });
@@ -567,40 +805,47 @@ createApp({
                     }
                     const runId = String(data.run_id || '__default__');
                     const requestId = String(data.request_id || '');
+                    const eventSessionId = String(data.session_id || activeSessionId.value || '');
                     pushStreamDebug('sse-message', {
                         type: data.type || '',
                         state: data.state || '',
                         run_id: runId,
                         request_id: requestId,
+                        session_id: eventSessionId,
                         content_len: typeof data.content === 'string' ? data.content.length : 0,
                     });
 
                     const updateTypingState = () => {
                         syncStreamActivityState();
-                        isTyping.value = runStates.size > 0 || activeStreamRuns > 0;
+                        isTyping.value = activeSessionRunning.value || (submitInFlight.value && !activeSessionId.value);
                     };
 
                     const flushRun = (rid) => {
                         const st = runStates.get(rid);
                         if (!st) return;
-                        const msg = messages.value[st.assistantIndex];
-                        if (!msg || msg.role !== 'assistant') return;
                         const buf = st.buffer;
                         if (!buf) return;
                         st.buffer = '';
-                        if (Array.isArray(msg.parts)) msg.parts.push(buf);
-                        msg.totalLen = (msg.totalLen || 0) + buf.length;
-                        if (msg.totalLen <= streamViewMax) {
-                            msg.content += buf;
-                        } else {
-                            msg.tail = (String(msg.tail || '') + buf).slice(-streamTailMax);
-                            msg.content = `【输出过长，流式仅显示末尾 ${streamTailMax} 字】\n` + msg.tail;
-                        }
+                        let totalLen = 0;
+                        let renderedLen = 0;
+                        updateSessionMessage(st.sessionId, st.assistantIndex, (msg) => {
+                            if (!msg || msg.role !== 'assistant') return;
+                            if (Array.isArray(msg.parts)) msg.parts.push(buf);
+                            msg.totalLen = (msg.totalLen || 0) + buf.length;
+                            if (msg.totalLen <= streamViewMax) {
+                                msg.content += buf;
+                            } else {
+                                msg.tail = (String(msg.tail || '') + buf).slice(-streamTailMax);
+                                msg.content = `【输出过长，流式仅显示末尾 ${streamTailMax} 字】\n` + msg.tail;
+                            }
+                            totalLen = msg.totalLen;
+                            renderedLen = msg.content.length;
+                        });
                         pushStreamDebug('flush-run', {
                             run_id: rid,
                             flushed_len: buf.length,
-                            total_len: msg.totalLen,
-                            rendered_len: msg.content.length,
+                            total_len: totalLen,
+                            rendered_len: renderedLen,
                         });
                         scrollToBottom();
                     };
@@ -623,7 +868,8 @@ createApp({
                             source: data.source || '',
                             prompt_len: typeof data.content === 'string' ? data.content.length : 0,
                         });
-                        messages.value.push(makeMessage('user', data.content, {
+                        const sid = eventSessionId || activeSessionId.value;
+                        pushSessionMessage(sid, makeMessage('user', data.content, {
                             timestamp: data.timestamp || new Date().toLocaleTimeString(),
                             source: data.source,
                             run_id: runId
@@ -642,11 +888,12 @@ createApp({
                         scrollToBottom();
                         
                         // Prepare assistant message placeholder
-                        messages.value.push(makeMessage('assistant', '', { streaming: true, run_id: runId }));
-                        runStates.set(runId, { assistantIndex: messages.value.length - 1, buffer: '', flushTimer: null });
+                        const assistantIndex = pushSessionMessage(sid, makeMessage('assistant', '', { streaming: true, run_id: runId }));
+                        runStates.set(runId, { sessionId: sid, assistantIndex, buffer: '', flushTimer: null });
+                        updateRunningSession(sid, true);
                         updateTypingState();
                     } else if (data.type === 'system') {
-                        messages.value.push(makeMessage('assistant', data.content || '', {
+                        pushSessionMessage(eventSessionId, makeMessage('assistant', data.content || '', {
                             timestamp: data.timestamp || new Date().toLocaleTimeString(),
                             source: data.source || 'system'
                         }));
@@ -675,7 +922,7 @@ createApp({
                     } else if (data.type === 'chunk') {
                         const st = runStates.get(runId);
                         if (!st) return;
-                        const msg = messages.value[st.assistantIndex];
+                        const msg = (sessionMessages.value[st.sessionId] || [])[st.assistantIndex];
                         if (msg && msg.role === 'assistant') {
                             st.buffer += String(data.content ?? '');
                         pushStreamDebug('chunk-buffer', {
@@ -698,6 +945,7 @@ createApp({
                         });
                         if (!st) {
                             activeStreamRuns = Math.max(0, activeStreamRuns - 1);
+                            updateRunningSession(eventSessionId, false);
                             if (looksLikeHumanRequest(data.content)) {
                                 status.value.needs_human_input = true;
                                 setFloatingStateHint('need-user');
@@ -716,14 +964,16 @@ createApp({
                             st.flushTimer = null;
                         }
                         flushRun(runId);
-                        const msg = messages.value[st.assistantIndex];
+                        const msg = (sessionMessages.value[st.sessionId] || [])[st.assistantIndex];
                         if (msg && msg.role === 'assistant') {
                             const full = (data.content !== undefined && data.content !== null && String(data.content) !== '')
                                 ? String(data.content)
                                 : (Array.isArray(msg.parts) ? msg.parts.join('') : msg.content);
-                            msg.content = full;
-                            msg.streaming = false;
-                            finalizeMessage(msg);
+                            updateSessionMessage(st.sessionId, st.assistantIndex, (m) => {
+                                m.content = full;
+                                m.streaming = false;
+                                finalizeMessage(m);
+                            });
                             pushStreamDebug('done-finalize', {
                                 run_id: runId,
                                 request_id: requestId,
@@ -740,6 +990,7 @@ createApp({
                             }
                         }
                         runStates.delete(runId);
+                        updateRunningSession(st.sessionId, false);
                         activeStreamRuns = Math.max(0, activeStreamRuns - 1);
                         if (requestId && pendingSubmissions.has(requestId)) {
                             pendingSubmissions.delete(requestId);
@@ -761,6 +1012,7 @@ createApp({
                         scrollToBottom();
                     } else if (data.type === 'start') {
                         activeStreamRuns += 1;
+                        updateRunningSession(eventSessionId, true);
                         status.value.needs_human_input = false;
                         setFloatingStateHint('running', 30000);
                         pushStreamDebug('start-recv', { run_id: runId, request_id: requestId, active_runs: activeStreamRuns });
@@ -841,6 +1093,8 @@ createApp({
                     await fetchLlmConfigs();
                     await fetchSopList();
                     await fetchCurrentConversation();
+                    await fetchGoalStatus();
+                    await fetchHiveStatus();
                     bootstrapLoaded = true;
                     return true;
                 }
@@ -986,27 +1240,124 @@ createApp({
             return rest ? `${cmd.prompt}\n\n${rest}` : cmd.prompt;
         };
 
+        const readImageFile = (file) => new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve({
+                id: `${Date.now()}_${Math.random().toString(16).slice(2)}`,
+                name: file.name || 'image.png',
+                type: file.type || 'image/png',
+                size: file.size || 0,
+                dataUrl: String(reader.result || '')
+            });
+            reader.onerror = () => reject(reader.error || new Error('read image failed'));
+            reader.readAsDataURL(file);
+        });
+
+        const addImageFiles = async (files) => {
+            const list = Array.from(files || []).filter((file) => file && String(file.type || '').startsWith('image/'));
+            if (!list.length) return;
+            attachmentError.value = '';
+            try {
+                const remaining = Math.max(0, 12 - attachedImages.value.length);
+                const images = await Promise.all(list.slice(0, remaining).map(readImageFile));
+                attachedImages.value = [...attachedImages.value, ...images].slice(0, 12);
+                nextTick(() => { if (window.lucide) lucide.createIcons(); });
+            } catch (e) {
+                attachmentError.value = String(e && e.message ? e.message : e);
+            }
+        };
+
+        const triggerImagePicker = () => {
+            if (fileInputRef.value) fileInputRef.value.click();
+        };
+
+        const handleImagePicker = async (event) => {
+            await addImageFiles(event && event.target ? event.target.files : []);
+            if (event && event.target) event.target.value = '';
+        };
+
+        const removeAttachedImage = (id) => {
+            attachedImages.value = attachedImages.value.filter((img) => img.id !== id);
+        };
+
+        const clearAttachedImages = () => {
+            attachedImages.value = [];
+            attachmentError.value = '';
+        };
+
+        const handleInputPaste = async (event) => {
+            const items = event && event.clipboardData ? Array.from(event.clipboardData.items || []) : [];
+            const files = items
+                .filter((item) => item.kind === 'file' && String(item.type || '').startsWith('image/'))
+                .map((item) => item.getAsFile())
+                .filter(Boolean);
+            if (files.length) {
+                event.preventDefault();
+                await addImageFiles(files);
+            }
+        };
+
+        const handleInputDrop = async (event) => {
+            const files = event && event.dataTransfer ? Array.from(event.dataTransfer.files || []) : [];
+            if (files.some((file) => String(file.type || '').startsWith('image/'))) {
+                event.preventDefault();
+                await addImageFiles(files);
+            }
+        };
+
+        const uploadAttachedImages = async () => {
+            if (!attachedImages.value.length) return [];
+            attachmentUploading.value = true;
+            attachmentError.value = '';
+            try {
+                const res = await fetch('/api/uploads/images', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        images: attachedImages.value.map((img) => ({
+                            id: img.id,
+                            name: img.name,
+                            type: img.type,
+                            dataUrl: img.dataUrl
+                        }))
+                    })
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+                return Array.isArray(data.images) ? data.images : [];
+            } finally {
+                attachmentUploading.value = false;
+            }
+        };
+
         const sendMessage = async () => {
-            if (!inputMessage.value.trim() || isTyping.value) return;
+            if ((!inputMessage.value.trim() && !attachedImages.value.length) || activeSessionRunning.value) return;
 
             const prompt = handleInputCommand();
-            await submitPrompt(prompt, { clearInput: true, resetModes: true });
+            await submitPrompt(prompt || '请分析这张图片。', { clearInput: true, resetModes: true });
         };
 
         const submitPrompt = async (prompt, options = {}) => {
-            if (!String(prompt || '').trim() || isTyping.value) return;
+            if ((!String(prompt || '').trim() && !attachedImages.value.length) || activeSessionRunning.value) return;
+            if (!activeSessionId.value) {
+                await fetchSessions();
+                if (!activeSessionId.value) await createChatSession();
+            }
+            const sessionId = activeSessionId.value;
+            if (!sessionId) {
+                attachmentError.value = '还没有可用的对话 session';
+                return;
+            }
 
             const requestId = (typeof crypto !== 'undefined' && crypto.randomUUID)
                 ? crypto.randomUUID()
                 : `${Date.now()}_${Math.random().toString(16).slice(2)}`;
-            if (currentSubmitAbortController) {
-                try { currentSubmitAbortController.abort(); } catch {}
-            }
             currentSubmitAbortController = new AbortController();
             submitInFlight.value = true;
             submissionNotice.value = '正在提交到后端...';
             pushStreamDebug('send-start', {
                 request_id: requestId,
+                session_id: sessionId,
                 prompt_len: prompt.length,
                 run_states: runStates.size,
                 active_runs: activeStreamRuns,
@@ -1017,10 +1368,11 @@ createApp({
             if (textarea) textarea.style.height = '3.5rem';
 
             try {
-                const response = await fetch('/api/chat', {
+                const uploadedImages = await uploadAttachedImages();
+                const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/chat`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ prompt, request_id: requestId }),
+                    body: JSON.stringify({ prompt, request_id: requestId, images: uploadedImages }),
                     signal: currentSubmitAbortController.signal
                 });
 
@@ -1031,6 +1383,7 @@ createApp({
                 pendingSubmissions.set(requestId, {
                     request_id: requestId,
                     run_id: runId,
+                    session_id: sessionId,
                     prompt_len: prompt.length,
                     confirmed: false,
                     startedAt: Date.now(),
@@ -1039,14 +1392,17 @@ createApp({
                 pushStreamDebug('send-queued', {
                     request_id: requestId,
                     run_id: runId,
+                    session_id: sessionId,
                     status: response.status,
                 });
 
                 if (options.clearInput !== false) inputMessage.value = '';
+                if (options.clearInput !== false) clearAttachedImages();
                 if (options.resetModes !== false) selectedModeIds.value = [];
                 submitInFlight.value = false;
                 currentSubmitAbortController = null;
-                isTyping.value = true;
+                updateRunningSession(sessionId, true);
+                isTyping.value = activeSessionRunning.value;
                 status.value.is_running = true;
                 status.value.needs_human_input = false;
                 setFloatingStateHint('running', 30000);
@@ -1056,11 +1412,13 @@ createApp({
                 console.error('Send failed:', e);
                 submitInFlight.value = false;
                 currentSubmitAbortController = null;
+                if (!aborted) attachmentError.value = String(e && e.message ? e.message : e);
                 submissionNotice.value = aborted ? '已放弃当前等待' : '提交失败：' + e.message;
+                updateRunningSession(sessionId, false);
                 status.value.is_running = false;
                 setFloatingStateHint('idle');
                 emitFloatingStatus(status.value, false, 'error');
-                isTyping.value = false;
+                isTyping.value = activeSessionRunning.value;
             }
         };
 
@@ -1113,6 +1471,7 @@ createApp({
 
         const historySessionView = computed(() => Array.isArray(historySessions.value) ? historySessions.value : []);
         const historyMessageView = computed(() => historyMessages.value.map((item, index) => normalizeHistoryMessage(item, index)));
+        const historySearchResultView = computed(() => Array.isArray(historySearchResults.value) ? historySearchResults.value : []);
 
         const memoryFilesView = computed(() => Array.isArray(memoryFiles.value) ? memoryFiles.value : []);
 
@@ -1169,6 +1528,10 @@ createApp({
         };
 
         const openModal = async (name) => {
+            if (name === 'orchestration') {
+                openOrchestrationConsole();
+                return;
+            }
             activeModal.value = name;
             try {
                 if (!apiReady.value) {
@@ -1188,6 +1551,11 @@ createApp({
                 if (name === 'history') await fetchHistoryData();
                 if (name === 'memory') await fetchMemoryList();
                 if (name === 'backup') await fetchBackups();
+                if (name === 'orchestration') {
+                    await fetchGoalStatus();
+                    await fetchHiveStatus();
+                    await fetchHivePosts();
+                }
                 if (name === 'pet') {
                     await fetchPetSkins();
                     await fetchPetConfig();
@@ -1201,6 +1569,33 @@ createApp({
                     if (window.lucide) lucide.createIcons();
                 });
             }
+        };
+
+        const refreshOrchestrationPanel = async () => {
+            const tasks = [
+                fetchGoalStatus().catch((e) => {
+                    goalError.value = String(e && e.message ? e.message : e);
+                    return false;
+                }),
+                fetchHiveStatus().catch((e) => {
+                    hiveError.value = String(e && e.message ? e.message : e);
+                    return false;
+                }),
+                fetchHivePosts().catch((e) => {
+                    hivePostsError.value = String(e && e.message ? e.message : e);
+                    return false;
+                }),
+            ];
+            await Promise.allSettled(tasks);
+        };
+
+        const openOrchestrationConsole = () => {
+            activeModal.value = 'orchestration';
+            orchestrationTab.value = 'hive';
+            nextTick(() => {
+                if (window.lucide) lucide.createIcons();
+            });
+            refreshOrchestrationPanel();
         };
 
         const closeModal = () => {
@@ -1479,6 +1874,35 @@ createApp({
             await fetchHistoryData();
         };
 
+        let historySearchTimer = null;
+        const searchHistory = async () => {
+            const q = String(historySearchQuery.value || '').trim();
+            historySearchError.value = '';
+            if (!q) {
+                historySearchResults.value = [];
+                return;
+            }
+            historySearchLoading.value = true;
+            try {
+                const url = `/api/conversations/search?q=${encodeURIComponent(q)}&limit=50`;
+                const res = await fetch(url);
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+                historySearchResults.value = Array.isArray(data.results) ? data.results : [];
+            } catch (e) {
+                historySearchError.value = String(e && e.message ? e.message : e);
+            } finally {
+                historySearchLoading.value = false;
+            }
+        };
+
+        const scheduleHistorySearch = () => {
+            if (historySearchTimer) clearTimeout(historySearchTimer);
+            historySearchTimer = setTimeout(searchHistory, 250);
+        };
+
+        watch(historySearchQuery, scheduleHistorySearch);
+
         const selectHistorySession = async (sessionId) => {
             if (!sessionId) return;
             selectedHistorySessionId.value = sessionId;
@@ -1626,6 +2050,355 @@ createApp({
                 backupError.value = String(e && e.message ? e.message : e);
             } finally {
                 backupCreating.value = false;
+            }
+        };
+
+        const formatGoalMinutes = (seconds) => {
+            const n = Math.max(0, Number(seconds) || 0);
+            if (n < 60) return `${Math.round(n)} 秒`;
+            const minutes = Math.round(n / 60);
+            if (minutes < 60) return `${minutes} 分钟`;
+            const hours = Math.floor(minutes / 60);
+            const rest = minutes % 60;
+            return rest ? `${hours} 小时 ${rest} 分钟` : `${hours} 小时`;
+        };
+
+        const fetchGoalStatus = async () => {
+            goalLoading.value = true;
+            goalError.value = '';
+            try {
+                const res = await fetch('/api/goal/status');
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+                goalState.value = data;
+                return true;
+            } catch (e) {
+                goalError.value = String(e && e.message ? e.message : e);
+                return false;
+            } finally {
+                goalLoading.value = false;
+            }
+        };
+
+        const startGoalMode = async () => {
+            const objective = String(goalObjective.value || '').trim();
+            if (!objective) {
+                goalError.value = '请先填写目标';
+                return;
+            }
+            goalLoading.value = true;
+            goalError.value = '';
+            goalNotice.value = '';
+            try {
+                const res = await fetch('/api/goal/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        objective,
+                        budget_minutes: Number(goalBudgetMinutes.value) || 30,
+                        max_turns: Number(goalMaxTurns.value) || 80,
+                        done_prompt: goalDonePrompt.value || ''
+                    })
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+                goalState.value = data;
+                goalNotice.value = 'Goal 模式已在后台启动';
+            } catch (e) {
+                goalError.value = String(e && e.message ? e.message : e);
+            } finally {
+                goalLoading.value = false;
+            }
+        };
+
+        const stopGoalMode = async () => {
+            goalLoading.value = true;
+            goalError.value = '';
+            goalNotice.value = '';
+            try {
+                const res = await fetch('/api/goal/stop', { method: 'POST' });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+                goalState.value = data;
+                goalNotice.value = 'Goal 模式已停止';
+            } catch (e) {
+                goalError.value = String(e && e.message ? e.message : e);
+            } finally {
+                goalLoading.value = false;
+            }
+        };
+
+        const fetchHiveStatus = async () => {
+            hiveLoading.value = true;
+            hiveError.value = '';
+            try {
+                const res = await fetch('/api/hive/status');
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+                hiveState.value = data;
+                return true;
+            } catch (e) {
+                hiveError.value = String(e && e.message ? e.message : e);
+                return false;
+            } finally {
+                hiveLoading.value = false;
+            }
+        };
+
+        const fetchHivePosts = async () => {
+            hivePostsLoading.value = true;
+            hivePostsError.value = '';
+            try {
+                const res = await fetch('/api/hive/posts?limit=80');
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok || data.error) {
+                    if (data.error) hivePostsError.value = data.error;
+                    else throw new Error(`HTTP ${res.status}`);
+                }
+                hiveBbsOffline.value = !!data.offline;
+                if (data.offline) hivePostsError.value = '';
+                hivePosts.value = Array.isArray(data.posts) ? data.posts : [];
+                hiveBbsUrl.value = data.bbs_url || '';
+                return true;
+            } catch (e) {
+                const msg = String(e && e.message ? e.message : e);
+                if (msg.includes('Connection refused') || msg.includes('Errno 61')) {
+                    hiveBbsOffline.value = true;
+                    hivePostsError.value = '';
+                } else {
+                    hivePostsError.value = msg;
+                }
+                return false;
+            } finally {
+                hivePostsLoading.value = false;
+            }
+        };
+
+        const switchOrchestrationTab = async (tab) => {
+            orchestrationTab.value = tab === 'hive' ? 'hive' : 'goal';
+            if (orchestrationTab.value === 'hive') {
+                await fetchHiveStatus();
+                await fetchHivePosts();
+            } else {
+                await fetchGoalStatus();
+            }
+        };
+
+        const refreshHivePanel = async () => {
+            await fetchHiveStatus();
+            await fetchHivePosts();
+        };
+
+        const hiveStatusLabel = (state) => {
+            const s = state || hiveState.value || {};
+            const effective = s.effective_status || (s.state && s.state.status) || '';
+            if (s.master_status === 'done_budget') return s.worker_pids && s.worker_pids.length ? 'Master已结束，Worker收尾中' : '预算结束';
+            if (effective === 'workers_running') return 'Worker收尾中';
+            if (String(effective).startsWith('bbs_only_')) return '仅BBS在线';
+            if (s.active_coordination) return '协作中';
+            if (effective) return effective;
+            return '未启动';
+        };
+
+        const hiveStatusDotClass = (state) => {
+            const s = state || hiveState.value || {};
+            if (s.active_coordination) return 'bg-green-500 animate-pulse';
+            if (s.bbs_running) return 'bg-amber-500';
+            return 'bg-gray-400';
+        };
+
+        const hivePostRole = (post) => {
+            const author = String(post && post.author ? post.author : '').toLowerCase();
+            if (author.includes('master')) return 'master';
+            if (author.includes('worker')) return 'worker';
+            if (author.includes('human') || author.includes('user')) return 'human';
+            if (author.includes('seed') || author.includes('system')) return 'system';
+            return 'agent';
+        };
+
+        const hivePostRoleLabel = (post) => {
+            const role = hivePostRole(post);
+            if (role === 'master') return 'MASTER';
+            if (role === 'worker') return 'WORKER';
+            if (role === 'human') return 'HUMAN';
+            if (role === 'system') return 'SYSTEM';
+            return 'AGENT';
+        };
+
+        const hivePostRoleClass = (post) => {
+            const role = hivePostRole(post);
+            if (role === 'master') return 'bg-indigo-50 text-indigo-700 border-indigo-200 dark:bg-indigo-950 dark:text-indigo-200 dark:border-indigo-800';
+            if (role === 'worker') return 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-200 dark:border-emerald-800';
+            if (role === 'human') return 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950 dark:text-amber-200 dark:border-amber-800';
+            if (role === 'system') return 'bg-gray-100 text-gray-700 border-gray-200 dark:bg-gray-800 dark:text-gray-200 dark:border-gray-700';
+            return 'bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950 dark:text-blue-200 dark:border-blue-800';
+        };
+
+        const formatHivePostTime = (post) => {
+            const ts = Number(post && post.created_at ? post.created_at : 0);
+            if (!Number.isFinite(ts) || ts <= 0) return '';
+            const date = new Date(ts * 1000);
+            return date.toLocaleString([], {
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+        };
+
+        const formatHiveDuration = (seconds) => {
+            if (seconds === null || seconds === undefined || seconds === '') return '-';
+            const n = Math.max(0, Math.floor(Number(seconds) || 0));
+            const m = Math.floor(n / 60);
+            const s = n % 60;
+            if (m >= 60) {
+                const h = Math.floor(m / 60);
+                const mm = m % 60;
+                return `${h}h ${mm}m`;
+            }
+            return `${m}:${String(s).padStart(2, '0')}`;
+        };
+
+        const hivePostPreview = (post) => {
+            const text = String(post && post.content ? post.content : '');
+            return text.length > 220 ? `${text.slice(0, 220)}...` : text;
+        };
+
+        const hivePostExpanded = (post) => !!(post && hiveExpandedPosts.value[post.id]);
+
+        const toggleHivePostExpanded = (post) => {
+            if (!post) return;
+            hiveExpandedPosts.value = { ...hiveExpandedPosts.value, [post.id]: !hiveExpandedPosts.value[post.id] };
+        };
+
+        const hiveControlAgent = async (action) => {
+            hiveLoading.value = true;
+            hiveError.value = '';
+            hiveNotice.value = '';
+            try {
+                const res = await fetch('/api/hive/control', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action, target: hiveControlTarget.value || 'all' })
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+                hiveState.value = data;
+                const label = action === 'pause' ? '暂停' : (action === 'resume' ? '继续' : '停止');
+                hiveNotice.value = `已${label} ${data.changed && data.changed.length ? data.changed.join(', ') : hiveControlTarget.value}`;
+                await fetchHivePosts();
+            } catch (e) {
+                hiveError.value = String(e && e.message ? e.message : e);
+            } finally {
+                hiveLoading.value = false;
+            }
+        };
+
+        const extendHiveBudget = async () => {
+            hiveLoading.value = true;
+            hiveError.value = '';
+            hiveNotice.value = '';
+            try {
+                const res = await fetch('/api/hive/extend', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        minutes: Number(hiveExtendMinutes.value) || 0,
+                        turns: Number(hiveExtendTurns.value) || 0
+                    })
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+                hiveState.value = data;
+                hiveNotice.value = '已追加 Hive 预算';
+                await fetchHivePosts();
+            } catch (e) {
+                hiveError.value = String(e && e.message ? e.message : e);
+            } finally {
+                hiveLoading.value = false;
+            }
+        };
+
+        const postHiveMessage = async () => {
+            const content = String(hivePostContent.value || '').trim();
+            if (!content) return;
+            hivePosting.value = true;
+            hivePostsError.value = '';
+            try {
+                const res = await fetch('/api/hive/post', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        author: hivePostAuthor.value || 'human',
+                        content
+                    })
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+                hivePostContent.value = '';
+                await fetchHivePosts();
+            } catch (e) {
+                hivePostsError.value = String(e && e.message ? e.message : e);
+            } finally {
+                hivePosting.value = false;
+            }
+        };
+
+        const appendHiveMention = (mention) => {
+            const prefix = String(mention || '').trim();
+            if (!prefix) return;
+            const current = String(hivePostContent.value || '');
+            if (current.trim().startsWith(prefix)) return;
+            hivePostContent.value = current.trim() ? `${prefix} ${current}` : `${prefix} `;
+        };
+
+        const startHiveMode = async () => {
+            const objective = String(hiveObjective.value || '').trim();
+            if (!objective) {
+                hiveError.value = '请先填写 Hive 目标';
+                return;
+            }
+            hiveLoading.value = true;
+            hiveError.value = '';
+            hiveNotice.value = '';
+            try {
+                const res = await fetch('/api/hive/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        objective,
+                        budget_minutes: Number(hiveBudgetMinutes.value) || 30,
+                        max_turns: Number(hiveMaxTurns.value) || 80,
+                        worker_count: Number(hiveWorkerCount.value) || 2
+                    })
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+                hiveState.value = data;
+                hiveNotice.value = 'Hive 模式已启动';
+                await fetchHivePosts();
+            } catch (e) {
+                hiveError.value = String(e && e.message ? e.message : e);
+            } finally {
+                hiveLoading.value = false;
+            }
+        };
+
+        const stopHiveMode = async () => {
+            hiveLoading.value = true;
+            hiveError.value = '';
+            hiveNotice.value = '';
+            try {
+                const res = await fetch('/api/hive/stop', { method: 'POST' });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+                hiveState.value = data;
+                hiveNotice.value = 'Hive 模式已停止';
+                await fetchHivePosts();
+            } catch (e) {
+                hiveError.value = String(e && e.message ? e.message : e);
+            } finally {
+                hiveLoading.value = false;
             }
         };
 
@@ -2057,11 +2830,18 @@ createApp({
                     currentSubmitAbortController = null;
                 }
                 const pendingRunIds = Array.from(pendingSubmissions.values())
+                    .filter((x) => !activeSessionId.value || x.session_id === activeSessionId.value)
                     .map((x) => x && x.run_id ? String(x.run_id) : '')
                     .filter(Boolean);
-                const activeRunIds = Array.from(runStates.keys());
+                const activeRunIds = Array.from(runStates.entries())
+                    .filter(([, st]) => !activeSessionId.value || st.sessionId === activeSessionId.value)
+                    .map(([rid]) => rid);
                 const runIds = Array.from(new Set([...pendingRunIds, ...activeRunIds]));
-                pendingSubmissions.clear();
+                for (const [key, value] of Array.from(pendingSubmissions.entries())) {
+                    if (!activeSessionId.value || value.session_id === activeSessionId.value) {
+                        pendingSubmissions.delete(key);
+                    }
+                }
                 submitInFlight.value = false;
                 for (const rid of runIds) {
                     const st = runStates.get(rid);
@@ -2070,8 +2850,7 @@ createApp({
                         clearTimeout(st.flushTimer);
                         st.flushTimer = null;
                     }
-                    const msg = messages.value[st.assistantIndex];
-                    if (msg) {
+                    updateSessionMessage(st.sessionId, st.assistantIndex, (msg) => {
                         const buf = st.buffer || '';
                         st.buffer = '';
                         if (buf) {
@@ -2083,19 +2862,23 @@ createApp({
                         }
                         msg.streaming = false;
                         finalizeMessage(msg);
-                    }
+                    });
                     runStates.delete(rid);
                 }
-                isTyping.value = false;
+                updateRunningSession(activeSessionId.value, false);
+                isTyping.value = activeSessionRunning.value;
                 submissionNotice.value = runIds.length > 0 ? '已请求停止当前任务' : '已放弃当前等待';
                 setFloatingStateHint('idle');
                 emitFloatingStatus(status.value, false, 'idle');
-                
-                await fetch('/api/control', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ action: 'stop', run_ids: runIds })
-                });
+                if (activeSessionId.value) {
+                    await fetch(`/api/sessions/${encodeURIComponent(activeSessionId.value)}/cancel`, { method: 'POST' });
+                } else {
+                    await fetch('/api/control', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ action: 'stop', run_ids: runIds })
+                    });
+                }
                 pushStreamDebug('stop-requested', { run_ids: runIds.length });
                 fetchStatus();
             } catch (e) {
@@ -2105,12 +2888,7 @@ createApp({
 
         const newConversation = async () => {
              try {
-                await fetch('/api/control', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ action: 'new_conversation' })
-                });
-                messages.value = [];
+                await createChatSession();
                 renderLimit.value = 120;
                 stickToBottom.value = true;
              } catch (e) {
@@ -2176,7 +2954,7 @@ createApp({
                 const data = await res.json().catch(() => ({}));
                 if (!res.ok || data.error) throw new Error(data.error || '插入引导失败');
                 interventionText.value = '';
-                interventionNotice.value = '已加入引导队列，将在下一次回合切换时生效';
+                interventionNotice.value = '已加入一次性引导队列，下一轮读取后会自动释放';
                 setTimeout(() => {
                     interventionOpen.value = false;
                     interventionNotice.value = '';
@@ -2232,6 +3010,9 @@ createApp({
             inputMessage,
             selectedModeIds,
             pendingGoalMode,
+            chatSessions,
+            activeSessionId,
+            activeSessionRunning,
             messages,
             visibleMessages,
             hiddenCount,
@@ -2246,6 +3027,7 @@ createApp({
             canIntervene,
             activeModal,
             openModal,
+            openOrchestrationConsole,
             closeModal,
             toggleTheme,
             todoContent,
@@ -2273,6 +3055,18 @@ createApp({
             setSchedulerInterval,
             reloadAgent,
             sendMessage,
+            switchChatSession,
+            createChatSession,
+            closeChatSession,
+            attachedImages,
+            attachmentError,
+            attachmentUploading,
+            fileInputRef,
+            triggerImagePicker,
+            handleImagePicker,
+            handleInputPaste,
+            handleInputDrop,
+            removeAttachedImage,
             modeCommands,
             selectedModeCommands,
             applyModeCommand,
@@ -2283,6 +3077,11 @@ createApp({
             selectedHistorySessionId,
             selectedHistorySession,
             historyMessageView,
+            historySearchQuery,
+            historySearchActive,
+            historySearchResultView,
+            historySearchLoading,
+            historySearchError,
             historyTitleDraft,
             historyNotice,
             historyLoading,
@@ -2309,6 +3108,63 @@ createApp({
             backupCreating,
             backupNotice,
             backupError,
+            goalState,
+            goalObjective,
+            goalBudgetMinutes,
+            goalMaxTurns,
+            goalDonePrompt,
+            goalLoading,
+            goalNotice,
+            goalError,
+            formatGoalMinutes,
+            fetchGoalStatus,
+            startGoalMode,
+            stopGoalMode,
+            hiveState,
+            hiveObjective,
+            hiveBudgetMinutes,
+            hiveMaxTurns,
+            hiveWorkerCount,
+            hiveLoading,
+            hiveNotice,
+            hiveError,
+            fetchHiveStatus,
+            startHiveMode,
+            stopHiveMode,
+            orchestrationTab,
+            switchOrchestrationTab,
+            hivePosts,
+            hivePostsLoading,
+            hivePostsError,
+            hiveBbsOffline,
+            hiveBbsUrl,
+            hivePostAuthor,
+            hivePostContent,
+            hivePosting,
+            hiveAutoRefresh,
+            hivePostFilter,
+            hivePostSearch,
+            hiveControlTarget,
+            hiveExtendMinutes,
+            hiveExtendTurns,
+            hiveBbsComposerOpen,
+            hiveExpandedPosts,
+            hiveFilteredPosts,
+            fetchHivePosts,
+            refreshHivePanel,
+            postHiveMessage,
+            appendHiveMention,
+            hiveControlAgent,
+            extendHiveBudget,
+            hiveStatusLabel,
+            hiveStatusDotClass,
+            hivePostRoleLabel,
+            hivePostRoleClass,
+            formatHivePostTime,
+            formatHiveDuration,
+            hivePostPreview,
+            hivePostExpanded,
+            toggleHivePostExpanded,
             communicationTools,
             communicationPath,
             selectedCommunicationId,

@@ -10,16 +10,64 @@
             var _backendPort = null;
             var _portReady = null;
             var _portReadyResolve = null;
+            var _portProbeStarted = false;
+            var _portProbeReject = null;
+            const _origFetch = window.fetch;
 
             function shouldUseSameOrigin() {
                 return window.location.protocol === 'http:' || window.location.protocol === 'https:';
             }
 
+            function candidatePorts() {
+                var out = [];
+                try {
+                    var qs = new URLSearchParams(window.location.search || '');
+                    var qp = qs.get('backend_port') || qs.get('port');
+                    if (qp) out.push(qp);
+                } catch (e) {}
+                try {
+                    var stored = localStorage.getItem('ga_backend_port');
+                    if (stored) out.push(stored);
+                } catch (e) {}
+                out.push('8000');
+                var seen = {};
+                return out.map(function(x) { return String(x || '').trim(); })
+                    .filter(function(x) { return /^\d+$/.test(x) && !seen[x] && (seen[x] = true); });
+            }
+
+            function probeBackendPorts() {
+                if (_portProbeStarted) return;
+                _portProbeStarted = true;
+                var ports = candidatePorts();
+                var index = 0;
+                function tryNext() {
+                    if (_backendPort) return;
+                    if (index >= ports.length) {
+                        if (_portProbeReject) _portProbeReject(new Error('Backend port timeout: no backendReady event and no local backend found on ' + ports.join(', ')));
+                        return;
+                    }
+                    var port = ports[index++];
+                    _origFetch('http://127.0.0.1:' + port + '/api/status', { cache: 'no-store' })
+                        .then(function(resp) {
+                            if (!resp || !resp.ok) throw new Error('HTTP ' + (resp && resp.status));
+                            _backendPort = port;
+                            try { localStorage.setItem('ga_backend_port', port); } catch (e) {}
+                            if (_portReadyResolve) { _portReadyResolve(port); _portReadyResolve = null; }
+                        })
+                        .catch(function() { setTimeout(tryNext, 150); });
+                }
+                tryNext();
+            }
+
             function getPortPromise() {
                 if (_backendPort) return Promise.resolve(_backendPort);
                 if (!_portReady) {
-                    _portReady = new Promise(function(resolve) { _portReadyResolve = resolve; });
+                    _portReady = new Promise(function(resolve, reject) {
+                        _portReadyResolve = resolve;
+                        _portProbeReject = reject;
+                    });
                 }
+                probeBackendPorts();
                 return _portReady;
             }
 
@@ -39,7 +87,6 @@
                 configurable: true
             });
 
-            const _origFetch = window.fetch;
             window.fetch = function(input, init) {
                 var url = typeof input === 'string' ? input : (input instanceof Request ? input.url : null);
                 if (url && url.startsWith('/')) {
@@ -47,7 +94,7 @@
                         return _origFetch.call(window, input, init);
                     }
                     var timeout = new Promise(function(_, reject) {
-                        setTimeout(function() { reject(new Error('Backend port timeout')); }, 15000);
+                        setTimeout(function() { reject(new Error('Backend port timeout: start backend with `python3 api_server.py`, open the app URL, or pass ?backend_port=PORT')); }, 15000);
                     });
                     return Promise.race([getPortPromise(), timeout]).then(function(port) {
                         var fullUrl = 'http://127.0.0.1:' + port + url;
@@ -65,6 +112,10 @@
             window.EventSource = function(url, config) {
                 if (typeof url === 'string' && url.startsWith('/')) {
                     var port = _backendPort;
+                    if (!port && !shouldUseSameOrigin()) {
+                        var ports = candidatePorts();
+                        port = ports.length ? ports[0] : null;
+                    }
                     if (port) url = 'http://127.0.0.1:' + port + url;
                 }
                 return new _origEventSource(url, config);
@@ -232,6 +283,95 @@
             flex: 1;
             overflow: auto;
         }
+        .ga-hive-status-shell {
+            position: sticky;
+            top: 0;
+            z-index: 10;
+            border: 1px solid #e5e7eb;
+            border-radius: 10px;
+            background: rgba(255, 255, 255, 0.96);
+            padding: 8px;
+            box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06);
+            backdrop-filter: blur(8px);
+        }
+        html.dark .ga-hive-status-shell {
+            border-color: #374151;
+            background: rgba(31, 41, 55, 0.96);
+        }
+        .ga-hive-status-strip {
+            display: flex;
+            gap: 8px;
+            align-items: stretch;
+            flex-wrap: nowrap;
+        }
+        .ga-hive-status-item {
+            flex: 1 1 0;
+            min-width: 0;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            gap: 2px;
+            border-radius: 8px;
+            background: #f9fafb;
+            padding: 8px 10px;
+        }
+        html.dark .ga-hive-status-item {
+            background: #111827;
+        }
+        .ga-hive-status-item.is-main {
+            flex-direction: row;
+            align-items: center;
+            justify-content: flex-start;
+        }
+        .ga-hive-status-label {
+            font-size: 11px;
+            color: #6b7280;
+            line-height: 1.2;
+        }
+        .ga-hive-status-value {
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            font-size: 13px;
+            font-weight: 700;
+            color: #111827;
+            line-height: 1.3;
+        }
+        html.dark .ga-hive-status-value {
+            color: #f3f4f6;
+        }
+        .ga-hive-settings-row {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            border: 1px solid #e5e7eb;
+            border-radius: 10px;
+            padding: 8px;
+        }
+        html.dark .ga-hive-settings-row {
+            border-color: #374151;
+        }
+        .ga-hive-settings-row label {
+            flex: 1 1 0;
+            min-width: 0;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .ga-hive-settings-row input {
+            min-width: 0;
+        }
+        @media (max-width: 720px) {
+            .ga-hive-status-strip,
+            .ga-hive-settings-row {
+                flex-wrap: wrap;
+            }
+            .ga-hive-status-item,
+            .ga-hive-settings-row label {
+                flex-basis: calc(50% - 4px);
+            }
+        }
         .goal-mode-overlay {
             position: fixed;
             inset: 0;
@@ -295,7 +435,63 @@
             align-items: center;
         }
         .ga-chat-input {
-            padding-right: 3.5rem !important;
+            padding-right: 6.25rem !important;
+        }
+        .ga-attachment-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+        .ga-attachment-item {
+            position: relative;
+            display: grid;
+            grid-template-columns: 56px minmax(0, 120px);
+            align-items: center;
+            gap: 8px;
+            max-width: 210px;
+            min-height: 64px;
+            padding: 4px 28px 4px 4px;
+            border: 1px solid rgba(229, 231, 235, 1);
+            border-radius: 8px;
+            background: rgba(249, 250, 251, 1);
+        }
+        html.dark .ga-attachment-item {
+            border-color: rgba(55, 65, 81, 1);
+            background: rgba(17, 24, 39, 1);
+        }
+        .ga-attachment-thumb {
+            width: 56px;
+            height: 56px;
+            object-fit: cover;
+            display: block;
+            border-radius: 6px;
+            background: rgba(229, 231, 235, 1);
+        }
+        .ga-attachment-name {
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            color: var(--text-secondary);
+            font-size: 12px;
+            line-height: 1.25;
+        }
+        .ga-attachment-remove {
+            position: absolute;
+            top: 6px;
+            right: 6px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 18px;
+            height: 18px;
+            border-radius: 999px;
+            background: rgba(17, 24, 39, 0.72);
+            color: white;
+        }
+        .ga-attachment-remove:hover {
+            background: rgba(17, 24, 39, 0.9);
         }
         .ga-token-card {
             margin-top: 10px;
@@ -374,6 +570,115 @@
             right: 8px;
             transform: translateY(-50%);
             z-index: 2;
+        }
+        .ga-image-button {
+            right: 48px;
+        }
+        .ga-session-bar {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            min-width: 0;
+            flex: 1 1 auto;
+            margin: 0 12px;
+            overflow-x: auto;
+        }
+        .ga-session-tab {
+            display: inline-flex;
+            align-items: center;
+            min-width: 112px;
+            max-width: 210px;
+            height: 34px;
+            border: 1px solid transparent;
+            border-radius: 8px;
+            background: transparent;
+            color: #4b5563;
+            font-size: 12px;
+            line-height: 1;
+            white-space: nowrap;
+            transition: background-color 0.15s, border-color 0.15s, color 0.15s;
+        }
+        .ga-session-tab:hover {
+            background: #f3f4f6;
+            color: #111827;
+        }
+        .ga-session-tab.is-active {
+            border-color: #bfdbfe;
+            background: #eff6ff;
+            color: #1d4ed8;
+            font-weight: 600;
+        }
+        .ga-session-main {
+            display: inline-flex;
+            align-items: center;
+            gap: 7px;
+            min-width: 0;
+            flex: 1 1 auto;
+            height: 100%;
+            padding: 0 6px 0 10px;
+            border-radius: 8px 0 0 8px;
+        }
+        .ga-session-main:focus-visible {
+            outline: 2px solid rgba(59, 130, 246, 0.55);
+            outline-offset: 2px;
+        }
+        .ga-session-title {
+            min-width: 0;
+            flex: 1 1 auto;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .ga-session-dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 999px;
+            background: #9ca3af;
+            flex: 0 0 auto;
+        }
+        .ga-session-tab.is-running .ga-session-dot {
+            background: #22c55e;
+            box-shadow: 0 0 0 4px rgba(34, 197, 94, 0.14);
+        }
+        .ga-session-count {
+            color: #9ca3af;
+            font-size: 11px;
+            flex: 0 0 auto;
+        }
+        .ga-session-close {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 18px;
+            height: 18px;
+            margin-right: 6px;
+            border-radius: 5px;
+            color: #9ca3af;
+            flex: 0 0 auto;
+            transition: background-color 0.15s, color 0.15s;
+        }
+        .ga-session-close:hover {
+            background: rgba(156, 163, 175, 0.18);
+            color: #111827;
+        }
+        .ga-session-close:focus-visible {
+            outline: 2px solid rgba(59, 130, 246, 0.45);
+            outline-offset: 1px;
+        }
+        html.dark .ga-session-tab {
+            color: #d1d5db;
+        }
+        html.dark .ga-session-tab:hover {
+            background: #374151;
+            color: #f9fafb;
+        }
+        html.dark .ga-session-tab.is-active {
+            border-color: rgba(59, 130, 246, 0.48);
+            background: rgba(30, 64, 175, 0.32);
+            color: #bfdbfe;
+        }
+        html.dark .ga-session-close:hover {
+            background: rgba(209, 213, 219, 0.16);
+            color: #f9fafb;
         }
         .ga-todo-textarea {
             width: 100%;
@@ -1443,6 +1748,10 @@
                             <i data-lucide="messages-square" class="w-4 h-4"></i>
                             通信工具
                         </button>
+                        <button @click="openOrchestrationConsole" class="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-md transition-colors">
+                            <i data-lucide="workflow" class="w-4 h-4"></i>
+                            编排控制台
+                        </button>
                         <button @click="openModal('pet')" class="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-md transition-colors">
                             <i data-lucide="cat" class="w-4 h-4"></i>
                             桌面宠物
@@ -1484,8 +1793,38 @@
                 <button @click="sidebarOpen = !sidebarOpen" class="p-2 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300 transition-colors">
                     <i data-lucide="menu" class="w-5 h-5"></i>
                 </button>
-                <div class="font-medium text-gray-700 dark:text-gray-200">对话</div>
-                <div class="w-8"></div> <!-- Spacer for balance -->
+                <div class="ga-session-bar scrollbar-hide" aria-label="对话窗口">
+                    <div
+                        v-for="session in chatSessions"
+                        :key="session.session_id"
+                        class="ga-session-tab"
+                        :class="{ 'is-active': session.session_id === activeSessionId, 'is-running': session.status === 'running' }"
+                        :title="session.title || '未命名对话'"
+                    >
+                        <button class="ga-session-main" @click="switchChatSession(session.session_id)">
+                            <span class="ga-session-dot"></span>
+                            <span class="ga-session-title">{{ session.title || '新对话' }}</span>
+                            <span class="ga-session-count">{{ session.message_count || 0 }}</span>
+                        </button>
+                        <button
+                            class="ga-session-close"
+                            title="关闭对话"
+                            aria-label="关闭对话"
+                            @click.stop="closeChatSession(session.session_id, $event)"
+                        >
+                            <i data-lucide="x" class="w-3.5 h-3.5"></i>
+                        </button>
+                    </div>
+                </div>
+                <div class="flex items-center gap-1">
+                    <button @click="openOrchestrationConsole" class="hidden sm:flex items-center gap-1.5 rounded-md border border-gray-200 dark:border-gray-700 px-2 py-1.5 text-xs text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors" title="打开编排控制台">
+                        <span class="h-2 w-2 rounded-full" :class="hiveStatusDotClass(hiveState)"></span>
+                        Hive
+                    </button>
+                    <button @click="createChatSession" class="p-2 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300 transition-colors" title="新建并行对话">
+                        <i data-lucide="plus" class="w-5 h-5"></i>
+                    </button>
+                </div>
             </header>
 
             <!-- Chat Area -->
@@ -1576,10 +1915,22 @@
                         <div v-if="interventionNotice" class="mt-1 text-xs text-green-600 dark:text-green-400">{{ interventionNotice }}</div>
                         <div v-if="interventionError" class="mt-1 text-xs text-red-600 dark:text-red-400">{{ interventionError }}</div>
                     </div>
-                    <div class="ga-input-wrap">
+                    <div v-if="attachedImages.length" class="ga-attachment-list">
+                        <div v-for="img in attachedImages" :key="img.id" class="ga-attachment-item">
+                            <img :src="img.dataUrl" :alt="img.name" class="ga-attachment-thumb" />
+                            <div class="ga-attachment-name" :title="img.name">{{ img.name }}</div>
+                            <button @click="removeAttachedImage(img.id)" class="ga-attachment-remove" title="移除图片">
+                                <i data-lucide="x" class="h-3 w-3"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div v-if="attachmentError" class="mb-2 text-xs text-red-600 dark:text-red-400">{{ attachmentError }}</div>
+                    <div class="ga-input-wrap" @drop.prevent="handleInputDrop" @dragover.prevent>
+                        <input ref="fileInputRef" type="file" accept="image/*" multiple class="hidden" @change="handleImagePicker" />
                         <textarea 
                             v-model="inputMessage" 
                             @keydown="handleInputKeydown"
+                            @paste="handleInputPaste"
                             @compositionstart="handleCompositionStart"
                             @compositionend="handleCompositionEnd"
                             placeholder="输入指令..." 
@@ -1587,16 +1938,25 @@
                             rows="1"
                         ></textarea>
                         <button 
+                            @click="triggerImagePicker" 
+                            :disabled="activeSessionRunning || attachmentUploading"
+                            class="ga-send-button ga-image-button p-2 bg-gray-100 hover:bg-gray-200 text-gray-600 dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-200 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm"
+                            title="添加图片"
+                        >
+                            <i data-lucide="image-plus" class="w-4 h-4"></i>
+                        </button>
+                        <button 
                             @click="sendMessage" 
-                            :disabled="!inputMessage.trim() || isTyping"
+                            :disabled="(!inputMessage.trim() && !attachedImages.length) || activeSessionRunning || attachmentUploading"
                             class="ga-send-button p-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm"
                         >
-                            <i data-lucide="send" class="w-4 h-4"></i>
+                            <i v-if="!activeSessionRunning && !attachmentUploading" data-lucide="send" class="w-4 h-4"></i>
+                            <i v-else data-lucide="loader-2" class="w-4 h-4 animate-spin"></i>
                         </button>
                     </div>
                 </div>
                 <div class="text-center mt-2 text-xs text-gray-400 dark:text-gray-500 hidden sm:block">
-                    按 Enter 发送 • Shift + Enter 换行
+                    按 Enter 发送 • Shift + Enter 换行 • 可粘贴/拖入图片
                 </div>
             </div>
         </main>
@@ -1615,6 +1975,7 @@
                         <template v-else-if="activeModal === 'memory'">记忆文件</template>
                         <template v-else-if="activeModal === 'backup'">数据备份</template>
                         <template v-else-if="activeModal === 'communication'">通信工具</template>
+                        <template v-else-if="activeModal === 'orchestration'">编排控制台</template>
                         <template v-else-if="activeModal === 'pet'">桌面宠物</template>
                     </div>
                     <button @click="closeModal" class="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-500 dark:text-gray-300">
@@ -1800,6 +2161,13 @@
                                     <button @click="refreshHistoryData" class="ga-btn ga-btn-xs ga-btn-secondary">刷新</button>
                                 </div>
                             </div>
+                            <div class="relative">
+                                <div class="pointer-events-none absolute inset-y-0 left-0 flex w-11 items-center justify-center border-r border-gray-200 text-gray-400 dark:border-gray-700">
+                                    <i data-lucide="search" class="h-4 w-4"></i>
+                                </div>
+                                <input v-model="historySearchQuery" class="w-full rounded-lg border border-gray-300 bg-white py-2.5 pl-14 pr-3 text-sm text-gray-800 shadow-sm transition focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100" placeholder="搜索历史对话..." />
+                            </div>
+                            <div v-if="historySearchError" class="text-sm text-red-600 dark:text-red-400">{{ historySearchError }}</div>
                             <div v-if="selectedHistorySessionId" class="flex items-center gap-2">
                                 <input v-model="historyTitleDraft" class="flex-1 bg-transparent border border-gray-300 dark:border-gray-700 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="会话名称"/>
                                 <button @click="renameHistorySession" :disabled="historySavingTitle" class="ga-btn ga-btn-sm ga-btn-secondary">{{ historySavingTitle ? '保存中...' : '保存名称' }}</button>
@@ -1809,16 +2177,26 @@
                             <div v-if="historyLoading" class="text-sm text-gray-500 dark:text-gray-400">加载中...</div>
                             <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
                                 <div class="md:col-span-1 border border-gray-200 dark:border-gray-700 rounded-md overflow-hidden">
-                                    <div class="px-3 py-2 text-xs font-semibold text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700">对话 Session</div>
+                                    <div class="px-3 py-2 text-xs font-semibold text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700">
+                                        {{ historySearchActive ? '搜索结果' : '对话 Session' }}
+                                        <span v-if="historySearchLoading" class="ml-2 font-normal text-gray-400">搜索中...</span>
+                                    </div>
                                     <div class="max-h-[55vh] overflow-auto">
-                                        <div v-if="!historySessionView.length" class="px-3 py-3 text-sm text-gray-500 dark:text-gray-400">暂无历史会话</div>
-                                        <button v-for="item in historySessionView" :key="item.session_id" @click="selectHistorySession(item.session_id)" class="w-full text-left px-3 py-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-700 border-b border-gray-100 dark:border-gray-800" :class="selectedHistorySessionId === item.session_id ? 'bg-blue-50 dark:bg-blue-900/20' : ''">
+                                        <div v-if="historySearchActive && !historySearchResultView.length && !historySearchLoading" class="px-3 py-3 text-sm text-gray-500 dark:text-gray-400">没有找到匹配对话</div>
+                                        <div v-if="!historySearchActive && !historySessionView.length" class="px-3 py-3 text-sm text-gray-500 dark:text-gray-400">暂无历史会话</div>
+                                        <button v-for="item in (historySearchActive ? historySearchResultView : historySessionView)" :key="item.session_id" @click="selectHistorySession(item.session_id)" class="w-full text-left px-3 py-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-700 border-b border-gray-100 dark:border-gray-800" :class="selectedHistorySessionId === item.session_id ? 'bg-blue-50 dark:bg-blue-900/20' : ''">
                                             <div class="flex items-center justify-between gap-2">
                                                 <span class="font-medium truncate">{{ item.title || '未命名对话' }}</span>
-                                                <span v-if="item.current" class="text-[10px] px-1.5 py-0.5 rounded bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300">当前</span>
+                                                <span v-if="historySearchActive" class="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300">{{ item.score }}</span>
+                                                <span v-else-if="item.current" class="text-[10px] px-1.5 py-0.5 rounded bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300">当前</span>
                                             </div>
                                             <div class="text-xs text-gray-400 mt-1 truncate">{{ item.updated_at || item.created_at }}</div>
                                             <div class="text-xs text-gray-500 dark:text-gray-400 mt-1 line-clamp-2">{{ item.summary || item.last_preview }}</div>
+                                            <div v-if="historySearchActive && item.matches && item.matches.length" class="mt-2 space-y-1">
+                                                <div v-for="match in item.matches.slice(0, 2)" :key="match.message_id || match.message_index" class="rounded bg-gray-50 px-2 py-1 text-[11px] text-gray-500 line-clamp-2 dark:bg-gray-900 dark:text-gray-400">
+                                                    {{ match.role }}: {{ match.snippet }}
+                                                </div>
+                                            </div>
                                             <div class="text-[11px] text-gray-400 mt-1">{{ item.message_count || 0 }} 条消息</div>
                                         </button>
                                     </div>
@@ -1951,6 +2329,221 @@
                                         </div>
                                     </div>
                                     <div v-else class="p-4 text-sm text-gray-500 dark:text-gray-400">请选择左侧通信工具进行配置。</div>
+                                </div>
+                            </div>
+                        </div>
+                    </template>
+
+                    <template v-else-if="activeModal === 'orchestration'">
+                        <div class="space-y-4">
+                            <div class="flex flex-wrap items-center justify-between gap-3">
+                                <div class="min-w-0">
+                                    <div class="text-sm font-medium text-gray-800 dark:text-gray-100">后台编排适合长任务；输入框上的 @goal 仍用于当前对话的临时目标模式。</div>
+                                    <div class="text-xs text-gray-500 dark:text-gray-400 mt-1">Goal 是单 agent 持续推进；Hive 是 master 拆任务，多 worker 通过 BBS 协作。</div>
+                                </div>
+                                <div class="inline-flex rounded-md border border-gray-200 bg-gray-50 p-1 text-xs dark:border-gray-700 dark:bg-gray-900">
+                                    <button @click="switchOrchestrationTab('goal')" class="rounded px-3 py-1.5" :class="orchestrationTab === 'goal' ? 'bg-white text-blue-700 shadow-sm dark:bg-gray-800 dark:text-blue-300' : 'text-gray-500 dark:text-gray-400'">Goal</button>
+                                    <button @click="switchOrchestrationTab('hive')" class="rounded px-3 py-1.5" :class="orchestrationTab === 'hive' ? 'bg-white text-blue-700 shadow-sm dark:bg-gray-800 dark:text-blue-300' : 'text-gray-500 dark:text-gray-400'">Hive</button>
+                                </div>
+                            </div>
+
+                            <div v-if="orchestrationTab === 'goal'" class="space-y-4">
+                                <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                    <div class="rounded-lg border border-gray-200 dark:border-gray-700 p-4">
+                                        <div class="text-xs text-gray-500 dark:text-gray-400">运行状态</div>
+                                        <div class="mt-2 flex items-center gap-2">
+                                            <span class="h-2.5 w-2.5 rounded-full" :class="goalState && goalState.running ? 'bg-green-500 animate-pulse' : 'bg-gray-400'"></span>
+                                            <span class="text-sm font-semibold text-gray-800 dark:text-gray-100">{{ goalState && goalState.running ? '后台推进中' : ((goalState && goalState.state && goalState.state.status) || '未启动') }}</span>
+                                        </div>
+                                    </div>
+                                    <div class="rounded-lg border border-gray-200 dark:border-gray-700 p-4">
+                                        <div class="text-xs text-gray-500 dark:text-gray-400">剩余预算</div>
+                                        <div class="mt-2 text-sm font-semibold text-gray-800 dark:text-gray-100">{{ formatGoalMinutes(goalState && goalState.remaining_seconds) }}</div>
+                                    </div>
+                                    <div class="rounded-lg border border-gray-200 dark:border-gray-700 p-4">
+                                        <div class="text-xs text-gray-500 dark:text-gray-400">推进轮次</div>
+                                        <div class="mt-2 text-sm font-semibold text-gray-800 dark:text-gray-100">{{ (goalState && goalState.state && goalState.state.turns_used) || 0 }} / {{ (goalState && goalState.state && goalState.state.max_turns) || goalMaxTurns }}</div>
+                                    </div>
+                                </div>
+
+                                <div v-if="goalNotice" class="text-sm text-green-700 dark:text-green-400">{{ goalNotice }}</div>
+                                <div v-if="goalError" class="text-sm text-red-600 dark:text-red-400">{{ goalError }}</div>
+
+                                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                    <div class="md:col-span-2 space-y-3">
+                                        <div>
+                                            <div class="text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1">要持续推进的目标</div>
+                                            <textarea v-model="goalObjective" class="w-full min-h-32 rounded-md border border-gray-300 bg-transparent px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-700 dark:text-gray-100" placeholder="写清楚最终目标、成功标准、不要做什么。"></textarea>
+                                        </div>
+                                        <div>
+                                            <div class="text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1">预算耗尽时怎么收口</div>
+                                            <textarea v-model="goalDonePrompt" class="w-full min-h-16 rounded-md border border-gray-300 bg-transparent px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-700 dark:text-gray-100" placeholder="可留空；例如：汇总改动、列出未完成项、不要继续新增功能。"></textarea>
+                                        </div>
+                                    </div>
+                                    <div class="space-y-3">
+                                        <label class="block">
+                                            <span class="text-xs text-gray-500 dark:text-gray-400">预算分钟</span>
+                                            <input v-model.number="goalBudgetMinutes" type="number" min="1" max="1440" class="mt-1 w-full rounded-md border border-gray-300 bg-transparent px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-700 dark:text-gray-100" />
+                                        </label>
+                                        <label class="block">
+                                            <span class="text-xs text-gray-500 dark:text-gray-400">最大轮次</span>
+                                            <input v-model.number="goalMaxTurns" type="number" min="1" max="500" class="mt-1 w-full rounded-md border border-gray-300 bg-transparent px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-700 dark:text-gray-100" />
+                                        </label>
+                                        <div class="space-y-2 pt-2">
+                                            <button @click="startGoalMode" :disabled="goalLoading || (goalState && goalState.running)" class="ga-btn ga-btn-primary w-full justify-center">{{ goalLoading ? '处理中...' : '启动 Goal' }}</button>
+                                            <button @click="stopGoalMode" :disabled="goalLoading || !(goalState && goalState.running)" class="ga-btn ga-btn-danger w-full justify-center">停止 Goal</button>
+                                            <button @click="fetchGoalStatus" :disabled="goalLoading" class="ga-btn ga-btn-secondary w-full justify-center">刷新状态</button>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="rounded-lg border border-gray-200 dark:border-gray-700 p-3 text-xs text-gray-500 dark:text-gray-400 space-y-1">
+                                    <div class="truncate">state: {{ goalState && goalState.state_path }}</div>
+                                    <div class="truncate">log: {{ goalState && goalState.log_path }}</div>
+                                    <div v-if="goalState && goalState.pid">pid: {{ goalState.pid }}</div>
+                                </div>
+                            </div>
+
+                            <div v-else class="space-y-3">
+                                <div class="ga-hive-status-shell">
+                                    <div class="ga-hive-status-strip">
+                                        <div class="ga-hive-status-item is-main">
+                                            <span class="h-2.5 w-2.5 rounded-full" :class="hiveStatusDotClass(hiveState)"></span>
+                                            <div class="min-w-0">
+                                                <div class="ga-hive-status-label">Hive</div>
+                                                <div class="ga-hive-status-value">{{ hiveStatusLabel(hiveState) }}</div>
+                                            </div>
+                                        </div>
+                                        <div class="ga-hive-status-item">
+                                            <div class="ga-hive-status-label">剩余时间</div>
+                                            <div class="ga-hive-status-value">{{ hiveState ? formatHiveDuration(hiveState.remaining_seconds) : '-' }}</div>
+                                        </div>
+                                        <div class="ga-hive-status-item">
+                                            <div class="ga-hive-status-label">剩余轮次</div>
+                                            <div class="ga-hive-status-value">{{ hiveState && hiveState.turns_remaining !== null ? hiveState.turns_remaining : '-' }} / {{ hiveState && hiveState.max_turns ? hiveState.max_turns : '-' }}</div>
+                                        </div>
+                                        <div class="ga-hive-status-item">
+                                            <div class="ga-hive-status-label">Agent</div>
+                                            <div class="ga-hive-status-value">{{ hiveState && hiveState.master_running ? 'M在线' : ((hiveState && hiveState.master_status) || 'M离线') }} · W{{ (hiveState && hiveState.worker_pids && hiveState.worker_pids.length) || 0 }}</div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div v-if="hiveNotice" class="text-sm text-green-700 dark:text-green-400">{{ hiveNotice }}</div>
+                                <div v-if="hiveError" class="text-sm text-red-600 dark:text-red-400">{{ hiveError }}</div>
+
+                                <div class="grid grid-cols-1 lg:grid-cols-5 gap-4">
+                                    <div class="lg:col-span-3 space-y-3">
+                                        <div>
+                                            <div class="text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1">要交给团队协作的目标</div>
+                                            <textarea v-model="hiveObjective" class="w-full min-h-24 rounded-md border border-gray-300 bg-transparent px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-700 dark:text-gray-100" placeholder="适合需要拆解、并行验证、多人协作的目标。"></textarea>
+                                        </div>
+                                        <div class="ga-hive-settings-row">
+                                            <label>
+                                                <span class="shrink-0 text-xs text-gray-500 dark:text-gray-400">分钟</span>
+                                                <input v-model.number="hiveBudgetMinutes" type="number" min="1" max="1440" class="w-full rounded-md border border-gray-300 bg-transparent px-2 py-1.5 text-xs text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-700 dark:text-gray-100" />
+                                            </label>
+                                            <label>
+                                                <span class="shrink-0 text-xs text-gray-500 dark:text-gray-400">轮次</span>
+                                                <input v-model.number="hiveMaxTurns" type="number" min="1" max="500" class="w-full rounded-md border border-gray-300 bg-transparent px-2 py-1.5 text-xs text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-700 dark:text-gray-100" />
+                                            </label>
+                                            <label>
+                                                <span class="shrink-0 text-xs text-gray-500 dark:text-gray-400">Worker</span>
+                                                <input v-model.number="hiveWorkerCount" type="number" min="1" max="6" class="w-full rounded-md border border-gray-300 bg-transparent px-2 py-1.5 text-xs text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-700 dark:text-gray-100" />
+                                            </label>
+                                        </div>
+                                        <div class="flex flex-wrap gap-2">
+                                            <button @click="startHiveMode" :disabled="hiveLoading || (hiveState && hiveState.running)" class="ga-btn ga-btn-primary">{{ hiveLoading ? '处理中...' : '启动 Hive' }}</button>
+                                            <button @click="stopHiveMode" :disabled="hiveLoading || !(hiveState && hiveState.running)" class="ga-btn ga-btn-danger">停止 Hive</button>
+                                            <button @click="refreshHivePanel" :disabled="hiveLoading || hivePostsLoading" class="ga-btn ga-btn-secondary">刷新状态/BBS</button>
+                                            <a v-if="hiveBbsUrl || (hiveState && hiveState.state && hiveState.state.bbs_url)" :href="hiveBbsUrl || hiveState.state.bbs_url" target="_blank" class="ga-btn ga-btn-secondary">打开 BBS</a>
+                                        </div>
+                                        <div class="grid grid-cols-1 md:grid-cols-2 gap-2 rounded-lg border border-gray-200 dark:border-gray-700 p-2">
+                                            <div class="flex flex-wrap items-center gap-2">
+                                                <select v-model="hiveControlTarget" class="rounded-md border border-gray-300 bg-transparent px-2 py-1.5 text-xs text-gray-800 focus:outline-none dark:border-gray-700 dark:text-gray-100">
+                                                    <option value="all">全部 agent</option>
+                                                    <option value="master">Master</option>
+                                                    <option value="workers">全部 worker</option>
+                                                    <option value="worker-1">Worker 1</option>
+                                                    <option value="worker-2">Worker 2</option>
+                                                </select>
+                                                <button @click="hiveControlAgent('pause')" :disabled="hiveLoading" class="ga-btn ga-btn-xs ga-btn-secondary">暂停</button>
+                                                <button @click="hiveControlAgent('resume')" :disabled="hiveLoading" class="ga-btn ga-btn-xs ga-btn-secondary">继续</button>
+                                                <button @click="hiveControlAgent('stop')" :disabled="hiveLoading" class="ga-btn ga-btn-xs ga-btn-danger">停止选中</button>
+                                            </div>
+                                            <div class="flex flex-wrap items-center gap-2">
+                                                <span class="text-xs text-gray-500 dark:text-gray-400">追加</span>
+                                                <input v-model.number="hiveExtendMinutes" type="number" min="0" max="1440" class="w-16 rounded-md border border-gray-300 bg-transparent px-2 py-1.5 text-xs text-gray-800 focus:outline-none dark:border-gray-700 dark:text-gray-100" />
+                                                <span class="text-xs text-gray-500 dark:text-gray-400">分钟</span>
+                                                <input v-model.number="hiveExtendTurns" type="number" min="0" max="500" class="w-16 rounded-md border border-gray-300 bg-transparent px-2 py-1.5 text-xs text-gray-800 focus:outline-none dark:border-gray-700 dark:text-gray-100" />
+                                                <span class="text-xs text-gray-500 dark:text-gray-400">轮</span>
+                                                <button @click="extendHiveBudget" :disabled="hiveLoading" class="ga-btn ga-btn-xs ga-btn-secondary">追加预算</button>
+                                            </div>
+                                        </div>
+                                        <div class="rounded-lg border border-gray-200 dark:border-gray-700 p-3 text-xs text-gray-500 dark:text-gray-400 space-y-1">
+                                            <div class="truncate">workspace: {{ hiveState && hiveState.state && hiveState.state.hive_root }}</div>
+                                            <div class="truncate">outputs: {{ hiveState && hiveState.output_dir }} <span v-if="hiveState && hiveState.recent_outputs">({{ hiveState.recent_outputs.length }} recent)</span></div>
+                                            <div class="truncate">state: {{ hiveState && hiveState.state_path }}</div>
+                                            <div v-if="hiveState && hiveState.master_pid">master pid: {{ hiveState.master_pid }}</div>
+                                            <div v-if="hiveState && hiveState.worker_pids && hiveState.worker_pids.length">worker pids: {{ hiveState.worker_pids.join(', ') }}</div>
+                                        </div>
+                                    </div>
+                                    <div class="lg:col-span-2 rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
+                                        <div class="flex items-center justify-between gap-2 px-3 py-2 bg-gray-50 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700">
+                                            <div>
+                                                <div class="text-xs font-semibold text-gray-700 dark:text-gray-200">BBS 协作动态</div>
+                                                <div class="text-[11px] text-gray-500 dark:text-gray-400">{{ hivePosts.length }} 条，显示 {{ hiveFilteredPosts.length }} 条</div>
+                                            </div>
+                                            <div class="flex items-center gap-2">
+                                                <label class="flex items-center gap-1 text-[11px] text-gray-500 dark:text-gray-400">
+                                                    <input v-model="hiveAutoRefresh" type="checkbox" class="h-3 w-3" />
+                                                    自动
+                                                </label>
+                                                <button @click="hiveBbsComposerOpen = !hiveBbsComposerOpen" class="ga-btn ga-btn-xs ga-btn-secondary">{{ hiveBbsComposerOpen ? '收起' : '人工介入' }}</button>
+                                                <button @click="fetchHivePosts" :disabled="hivePostsLoading" class="ga-btn ga-btn-xs ga-btn-secondary">{{ hivePostsLoading ? '刷新中' : '刷新' }}</button>
+                                            </div>
+                                        </div>
+                                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 border-b border-gray-200 dark:border-gray-700 p-3">
+                                            <select v-model="hivePostFilter" class="rounded-md border border-gray-300 bg-transparent px-2 py-1.5 text-xs text-gray-800 focus:outline-none dark:border-gray-700 dark:text-gray-100">
+                                                <option value="all">全部角色</option>
+                                                <option value="master">Master</option>
+                                                <option value="worker">Worker</option>
+                                                <option value="human">Human</option>
+                                                <option value="system">System</option>
+                                            </select>
+                                            <input v-model="hivePostSearch" class="rounded-md border border-gray-300 bg-transparent px-2 py-1.5 text-xs text-gray-800 focus:outline-none dark:border-gray-700 dark:text-gray-100" placeholder="过滤作者或内容" />
+                                        </div>
+                                        <div v-if="hiveBbsComposerOpen" class="border-b border-gray-200 dark:border-gray-700 p-3 space-y-2">
+                                            <div class="flex gap-2">
+                                                <input v-model="hivePostAuthor" class="w-28 rounded-md border border-gray-300 bg-transparent px-2 py-1.5 text-xs text-gray-800 focus:outline-none dark:border-gray-700 dark:text-gray-100" placeholder="署名" />
+                                                <button @click="postHiveMessage" :disabled="hivePosting || !hivePostContent.trim()" class="ga-btn ga-btn-xs ga-btn-primary">{{ hivePosting ? '发送中' : '发帖' }}</button>
+                                            </div>
+                                            <div class="flex flex-wrap gap-1">
+                                                <button @click="appendHiveMention('@master')" class="ga-btn ga-btn-xs ga-btn-secondary">@master</button>
+                                                <button @click="appendHiveMention('@worker-1')" class="ga-btn ga-btn-xs ga-btn-secondary">@worker-1</button>
+                                                <button @click="appendHiveMention('@worker-2')" class="ga-btn ga-btn-xs ga-btn-secondary">@worker-2</button>
+                                                <button @click="appendHiveMention('@all')" class="ga-btn ga-btn-xs ga-btn-secondary">@all</button>
+                                            </div>
+                                            <textarea v-model="hivePostContent" class="w-full min-h-16 rounded-md border border-gray-300 bg-transparent px-2 py-2 text-xs text-gray-800 focus:outline-none dark:border-gray-700 dark:text-gray-100" placeholder="给 master / worker 留言，例如：优先检查前端入口是否正确。"></textarea>
+                                        </div>
+                                        <div class="max-h-[42vh] overflow-auto p-2 space-y-1.5">
+                                            <div v-if="hivePostsError" class="text-xs text-red-600 dark:text-red-400">{{ hivePostsError }}</div>
+                                            <div v-if="hiveBbsOffline && !hivePostsError" class="text-sm text-gray-500 dark:text-gray-400">BBS 已离线。Hive 停止后这是正常状态。</div>
+                                            <div v-else-if="!hivePosts.length && !hivePostsError" class="text-sm text-gray-500 dark:text-gray-400">暂无帖子。Hive 启动后，Master 和 worker 会在这里汇报。</div>
+                                            <div v-if="hivePosts.length && !hiveFilteredPosts.length && !hivePostsError" class="text-sm text-gray-500 dark:text-gray-400">当前过滤条件下没有匹配帖子。</div>
+                                            <div v-for="post in hiveFilteredPosts" :key="post.id" class="rounded-md border border-gray-200 dark:border-gray-700 p-2">
+                                                <div class="flex items-center justify-between gap-2 text-[11px] text-gray-400">
+                                                    <div class="min-w-0 flex items-center gap-2">
+                                                        <span class="shrink-0 rounded border px-1.5 py-0.5 text-[10px] font-semibold" :class="hivePostRoleClass(post)">{{ hivePostRoleLabel(post) }}</span>
+                                                        <span class="font-semibold text-gray-700 dark:text-gray-200 truncate">{{ post.author }}</span>
+                                                    </div>
+                                                    <span class="shrink-0">#{{ post.id }} {{ formatHivePostTime(post) }}</span>
+                                                </div>
+                                                <div class="mt-1 whitespace-pre-wrap break-words text-xs leading-5 text-gray-700 dark:text-gray-200">{{ hivePostExpanded(post) ? post.content : hivePostPreview(post) }}</div>
+                                                <button v-if="post.content && post.content.length > 220" @click="toggleHivePostExpanded(post)" class="mt-1 text-[11px] text-blue-600 dark:text-blue-300">{{ hivePostExpanded(post) ? '收起' : '展开' }}</button>
+                                            </div>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                         </div>

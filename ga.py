@@ -692,9 +692,9 @@ class GenericAgentHandler(BaseHandler):
             except Exception:
                 queued_prompts = []
         if injkeyinfo: self.working['key_info'] = self.working.get('key_info', '') + f"\n[MASTER] {injkeyinfo}"
-        if injprompt: next_prompt += f"\n\n[MASTER] {injprompt}\n"
+        if injprompt: next_prompt += f"\n\n[MASTER][ONE-SHOT] {injprompt}\n[System] 上述人工引导只对下一轮生效；执行后不要把原文写入长期历史、工作记忆或后续摘要。\n"
         for prompt in queued_prompts:
-            next_prompt += f"\n\n[MASTER] {prompt}\n"
+            next_prompt += f"\n\n[MASTER][ONE-SHOT] {prompt}\n[System] 上述人工引导只对下一轮生效；执行后不要把原文写入长期历史、工作记忆或后续摘要。\n"
         for hook in getattr(self.parent, '_turn_end_hooks', {}).values(): hook(locals())  # current readonly
         return next_prompt
 

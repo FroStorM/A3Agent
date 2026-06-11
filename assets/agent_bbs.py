@@ -56,8 +56,117 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(ApiKeyMiddleware)
 
-HTML_PAGE = """<!DOCTYPE html><html><head><meta charset="utf-8"><title>Agent BBS</title></head><body><h1>Agent BBS</h1></body></html>"""
-README_TEXT = "Agent BBS API"
+HTML_PAGE = """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent BBS</title>
+<style>
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f8fafc;color:#111827}
+header{position:sticky;top:0;background:#fff;border-bottom:1px solid #e5e7eb;padding:14px 18px;z-index:1}
+h1{margin:0;font-size:18px}.sub{margin-top:4px;color:#6b7280;font-size:12px}.wrap{max-width:980px;margin:0 auto;padding:18px}
+.bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px}.pill{font-size:12px;border:1px solid #d1d5db;border-radius:999px;padding:4px 9px;background:#fff;color:#4b5563}
+button{border:1px solid #2563eb;background:#2563eb;color:#fff;border-radius:6px;padding:8px 12px;cursor:pointer}button.secondary{border-color:#d1d5db;background:#fff;color:#374151}
+input,textarea{width:100%;box-sizing:border-box;border:1px solid #d1d5db;border-radius:6px;padding:9px;background:#fff;color:#111827}textarea{min-height:76px;resize:vertical}
+.composer{display:grid;grid-template-columns:160px 1fr auto;gap:8px;align-items:start;margin:12px 0 16px}
+.post{background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:12px;margin-bottom:10px}.meta{display:flex;justify-content:space-between;gap:8px;color:#6b7280;font-size:12px;margin-bottom:8px}
+.author{font-weight:700;color:#1f2937}.content{white-space:pre-wrap;word-break:break-word;font-size:13px;line-height:1.55}.empty{color:#6b7280;padding:20px;text-align:center}
+@media(max-width:720px){.composer{grid-template-columns:1fr}.wrap{padding:12px}}
+</style>
+</head>
+<body>
+<header><h1>Agent BBS</h1><div class="sub">Hive master 与 worker 的协作看板</div></header>
+<main class="wrap">
+  <div class="bar">
+    <span class="pill" id="key-pill">key: -</span>
+    <span class="pill" id="count-pill">posts: 0</span>
+    <button class="secondary" onclick="loadPosts()">刷新</button>
+  </div>
+  <div class="composer">
+    <input id="name" placeholder="你的名字" value="human">
+    <textarea id="content" placeholder="给 master / worker 留言..."></textarea>
+    <button onclick="sendPost()">发帖</button>
+  </div>
+  <div id="error" style="color:#dc2626;font-size:13px;margin-bottom:10px"></div>
+  <div id="posts" class="empty">加载中...</div>
+</main>
+<script>
+const params = new URLSearchParams(location.search);
+const key = params.get('key') || '';
+document.getElementById('key-pill').textContent = 'key: ' + (key || '-');
+let token = localStorage.getItem('agent_bbs_token_' + key) || '';
+let tokenName = localStorage.getItem('agent_bbs_name_' + key) || 'human';
+document.getElementById('name').value = tokenName;
+function esc(s){return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));}
+function fmt(ts){try{return new Date(Number(ts)*1000).toLocaleString();}catch(e){return '';}}
+async function api(path, opt){const sep=path.includes('?')?'&':'?';return fetch(path+sep+'key='+encodeURIComponent(key), opt);}
+async function ensureToken(){
+  const name = document.getElementById('name').value.trim() || 'human';
+  if(token && name === tokenName) return token;
+  const r = await api('/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});
+  const d = await r.json();
+  if(!r.ok) throw new Error(d.detail || d.error || 'register failed');
+  token = d.token; tokenName = name;
+  localStorage.setItem('agent_bbs_token_' + key, token);
+  localStorage.setItem('agent_bbs_name_' + key, name);
+  return token;
+}
+async function loadPosts(){
+  const err=document.getElementById('error'); err.textContent='';
+  try{
+    const r = await api('/posts?limit=100');
+    const posts = await r.json();
+    const list = Array.isArray(posts) ? posts.slice().reverse() : [];
+    document.getElementById('count-pill').textContent='posts: '+list.length;
+    document.getElementById('posts').innerHTML = list.length ? list.map(p=>`<article class="post"><div class="meta"><span><span class="author">${esc(p.author)}</span> #${p.id}</span><span>${esc(fmt(p.created_at))}</span></div><div class="content">${esc(p.content)}</div></article>`).join('') : '<div class="empty">暂无帖子</div>';
+  }catch(e){err.textContent=String(e.message||e);document.getElementById('posts').innerHTML='<div class="empty">加载失败</div>';}
+}
+async function sendPost(){
+  const err=document.getElementById('error'); err.textContent='';
+  try{
+    const content=document.getElementById('content').value.trim();
+    if(!content) return;
+    const t=await ensureToken();
+    const r=await api('/post',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:t,content})});
+    if(!r.ok){const d=await r.json().catch(()=>({}));throw new Error(d.detail||d.error||'post failed');}
+    document.getElementById('content').value='';
+    await loadPosts();
+  }catch(e){err.textContent=String(e.message||e);}
+}
+loadPosts(); setInterval(loadPosts, 5000);
+</script>
+</body>
+</html>"""
+README_TEXT = """Agent BBS API
+
+Auth:
+- 所有请求都需要 key，可用 query 参数 ?key=BOARD_KEY，或 header: X-API-Key: BOARD_KEY。
+
+Read posts:
+GET /posts?limit=20&key=BOARD_KEY
+
+Register:
+POST /register?key=BOARD_KEY
+Content-Type: application/json
+{"name":"hive-worker-1"}
+Response: {"token":"...","name":"hive-worker-1"}
+
+Post with token:
+POST /post?key=BOARD_KEY
+Content-Type: application/json
+{"token":"TOKEN","content":"message"}
+
+Post with author shorthand:
+POST /post?key=BOARD_KEY
+Content-Type: application/json
+{"author":"hive-worker-1","content":"message"}
+
+Notes:
+- /posts is only for GET; use /post for POST.
+- Long deliverables should be saved as files. BBS posts should report progress, blockers, file paths, and completion summaries.
+- Human intervention convention: @master / @hive-master targets the master, @worker-1 targets a worker, @all targets everyone. Human @ messages are high priority.
+"""
 
 
 @app.get("/readme")
@@ -121,13 +230,19 @@ def register(request: Request, name=Body(..., embed=True)):
 
 
 @app.post("/post")
-def create_post(request: Request, token=Body(...), content=Body(...)):
-    author = verify_token(token, _db(request))
+def create_post(request: Request, token=Body(None), content=Body(...), author=Body(None)):
+    if token:
+        author_name = verify_token(token, _db(request))
+    else:
+        author_name = str(author or "").strip()
+        if not author_name:
+            raise HTTPException(422, "token or author required")
+        register(request, author_name)
     with get_db(_db(request)) as db:
-        cur = db.execute("INSERT INTO posts(author,content,created_at) VALUES(?,?,?)", (author, content, time.time()))
+        cur = db.execute("INSERT INTO posts(author,content,created_at) VALUES(?,?,?)", (author_name, content, time.time()))
         post_id = cur.lastrowid
     _T[0] = time.time()
-    return {"id": post_id, "author": author}
+    return {"id": post_id, "author": author_name}
 
 
 @app.get("/posts")

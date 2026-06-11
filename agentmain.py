@@ -143,6 +143,25 @@ class GeneraticAgent:
                 items.append(str(item).strip())
         return items
 
+    def _strip_ephemeral_guidance_from_backend_history(self):
+        try:
+            hist = getattr(self.llmclient.backend, 'history', None)
+            if not isinstance(hist, list):
+                return
+            for msg in hist:
+                if not isinstance(msg, dict) or msg.get('role') != 'user':
+                    continue
+                content = msg.get('content')
+                blocks = content if isinstance(content, list) else []
+                for block in blocks:
+                    if not isinstance(block, dict) or not isinstance(block.get('text'), str):
+                        continue
+                    text = block['text']
+                    if '[MASTER]' in text and '\n\n[USER]' in text:
+                        block['text'] = text.rsplit('\n\n[USER]', 1)[-1].strip()
+        except Exception:
+            pass
+
     # i know it is dangerous, but raw_query is dangerous enough it doesn't enlarge
     def _handle_slash_cmd(self, raw_query, display_queue):
         if not raw_query.startswith('/'): return raw_query
@@ -168,12 +187,10 @@ class GeneraticAgent:
             if raw_query is None:
                 self.task_queue.task_done(); continue
             self.is_running = True
-            queued_prompts = self.consume_interventions()
-            if queued_prompts:
-                guidance = "\n\n".join(f"[MASTER] {prompt}" for prompt in queued_prompts)
-                raw_query = f"{guidance}\n\n[USER] {raw_query}"
+            self._strip_ephemeral_guidance_from_backend_history()
+            if self.has_pending_interventions():
                 display_queue.put({
-                    'next': f"[Info] 已注入 {len(queued_prompts)} 条排队引导。\n",
+                    'next': "[Info] 检测到排队引导，将在下一轮一次性注入并自动释放。\n",
                     'source': 'system'
                 })
             rquery = smart_format(raw_query.replace('\n', ' '), max_str_len=200)
@@ -241,7 +258,24 @@ if __name__ == '__main__':
     parser.add_argument('--llm_no', type=int, default=0)
     parser.add_argument('--verbose', action='store_true')
     parser.add_argument('--bg', action='store_true', help='popen, print PID, exit')
-    args = parser.parse_args()
+    args, reflect_unknown = parser.parse_known_args()
+
+    def _reflect_extra_args(items):
+        out = {}
+        i = 0
+        while i < len(items):
+            item = items[i]
+            if not item.startswith('--'):
+                i += 1
+                continue
+            key = item[2:].replace('-', '_')
+            val = True
+            if i + 1 < len(items) and not items[i + 1].startswith('--'):
+                val = items[i + 1]
+                i += 1
+            out[key] = val
+            i += 1
+        return out
 
     if args.bg:
         import subprocess, platform
@@ -289,11 +323,18 @@ if __name__ == '__main__':
         import importlib.util
         spec = importlib.util.spec_from_file_location('reflect_script', args.reflect)
         mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+        reflect_args = _reflect_extra_args(reflect_unknown)
+        if hasattr(mod, 'init'):
+            try: mod.init(reflect_args)
+            except Exception as e: print(f'[Reflect] init error: {e}')
         _mt = os.path.getmtime(args.reflect)
         print(f'[Reflect] loaded {args.reflect}')
         while True:
             if os.path.getmtime(args.reflect) != _mt:
-                try: spec.loader.exec_module(mod); _mt = os.path.getmtime(args.reflect); print('[Reflect] reloaded')
+                try:
+                    spec.loader.exec_module(mod)
+                    if hasattr(mod, 'init'): mod.init(reflect_args)
+                    _mt = os.path.getmtime(args.reflect); print('[Reflect] reloaded')
                 except Exception as e: print(f'[Reflect] reload error: {e}')
             time.sleep(getattr(mod, 'INTERVAL', 5))
             try: task = mod.check()
