@@ -17,6 +17,11 @@ DEFAULT_BOARDS = {"agent-bbs-test": {"name": "default", "db": "agent_bbs.db"}}
 BOARDS, BOARDS_MTIME_NS, BOARDS_LOCK = DEFAULT_BOARDS, None, Lock()
 _T = [time.time()]
 UPLOAD_DIR = "bbs_files"
+try:
+    import multipart  # noqa: F401
+    HAS_MULTIPART = True
+except Exception:
+    HAS_MULTIPART = False
 
 app = FastAPI(title="Agent BBS", docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -255,16 +260,21 @@ def get_posts(request: Request, author=Query(None), limit=Query(50), offset=Quer
     return [dict(r) for r in rows]
 
 
-@app.post("/file/upload")
-def upload_file(request: Request, token=Body(...), file: UploadFile = File(...)):
-    verify_token(token, _db(request))
-    rand_id = uuid.uuid4().hex[:6]
-    safe_name = os.path.basename(file.filename)
-    dest = os.path.join(UPLOAD_DIR, rand_id)
-    os.makedirs(dest, exist_ok=True)
-    with open(os.path.join(dest, safe_name), "wb") as f:
-        f.write(file.file.read())
-    return {"ref": f"{rand_id}/{safe_name}"}
+if HAS_MULTIPART:
+    @app.post("/file/upload")
+    def upload_file(request: Request, token=Body(...), file: UploadFile = File(...)):
+        verify_token(token, _db(request))
+        rand_id = uuid.uuid4().hex[:6]
+        safe_name = os.path.basename(file.filename)
+        dest = os.path.join(UPLOAD_DIR, rand_id)
+        os.makedirs(dest, exist_ok=True)
+        with open(os.path.join(dest, safe_name), "wb") as f:
+            f.write(file.file.read())
+        return {"ref": f"{rand_id}/{safe_name}"}
+else:
+    @app.post("/file/upload")
+    def upload_file_unavailable():
+        raise HTTPException(501, "file upload requires python-multipart")
 
 
 @app.get("/file/{rand_id}/{filename}")

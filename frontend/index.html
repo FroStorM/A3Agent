@@ -191,6 +191,7 @@
         html.js-ready .startup-fallback {
             opacity: 0;
             pointer-events: none;
+            display: none;
         }
         .startup-card {
             max-width: 560px;
@@ -226,9 +227,34 @@
         .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
         *, *::before, *::after { box-sizing: border-box; }
         .ga-sidebar {
+            position: relative;
+            z-index: 30;
             width: 16rem;
             flex: 0 0 16rem;
             transition: width 220ms ease, flex-basis 220ms ease, opacity 180ms ease, border-color 180ms ease;
+        }
+        [data-lucide] {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+        [data-lucide] > svg {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+        .ga-sidebar button {
+            min-height: 2rem;
+        }
+        .ga-sidebar button i[data-lucide] {
+            width: 1rem;
+            height: 1rem;
+            flex: 0 0 1rem;
+        }
+        .ga-sidebar button svg {
+            width: 1rem;
+            height: 1rem;
         }
         .ga-sidebar.is-collapsed {
             width: 0;
@@ -246,6 +272,19 @@
             .ga-sidebar.is-collapsed {
                 transform: translateX(-100%);
                 opacity: 0;
+            }
+        }
+
+        .ga-mobile-sidebar-overlay {
+            position: fixed;
+            inset: 0;
+            z-index: 10;
+            display: none;
+            background: rgba(0, 0, 0, 0.5);
+        }
+        @media (max-width: 767px) {
+            .ga-mobile-sidebar-overlay {
+                display: block;
             }
         }
 
@@ -362,6 +401,188 @@
         .ga-hive-settings-row input {
             min-width: 0;
         }
+        .ga-path-actions {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            flex-shrink: 0;
+        }
+        .ga-compose-panel {
+            border: 1px solid #d1d5db;
+            border-radius: 10px;
+            background: #ffffff;
+            overflow: hidden;
+        }
+        html.dark .ga-compose-panel {
+            border-color: #374151;
+            background: #111827;
+        }
+        .ga-compose-top {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            min-height: 38px;
+            padding: 8px 10px;
+            border-bottom: 1px solid #e5e7eb;
+            background: #f9fafb;
+        }
+        html.dark .ga-compose-top {
+            border-color: #374151;
+            background: #0f172a;
+        }
+        .ga-compose-body {
+            padding: 0;
+        }
+        .ga-compose-panel .ga-goal-textarea {
+            border: 0;
+            border-radius: 0;
+            background: transparent !important;
+            box-shadow: none;
+        }
+        .ga-compose-panel .ga-goal-textarea:focus {
+            background: transparent !important;
+            box-shadow: inset 0 0 0 2px rgba(59, 130, 246, 0.18);
+        }
+        .ga-compose-attachments {
+            margin: 0;
+            padding: 0 10px 10px;
+        }
+        .ga-path-chip {
+            min-height: 1.625rem !important;
+            height: 1.625rem;
+            padding: 0 0.5rem !important;
+            border-radius: 6px;
+            font-size: 0.72rem !important;
+            font-weight: 600;
+            white-space: nowrap;
+            box-shadow: none;
+            letter-spacing: 0;
+        }
+        .ga-path-chip i,
+        .ga-path-chip svg {
+            width: 0.82rem;
+            height: 0.82rem;
+            flex: 0 0 auto;
+        }
+        .ga-hive-compact-panel {
+            border: 1px solid #e5e7eb;
+            border-radius: 10px;
+            background: #ffffff;
+            padding: 10px;
+        }
+        html.dark .ga-hive-compact-panel {
+            border-color: #374151;
+            background: #111827;
+        }
+        .ga-hive-panel-title {
+            margin-bottom: 8px;
+            color: #6b7280;
+            font-size: 11px;
+            font-weight: 800;
+            letter-spacing: 0;
+            line-height: 1.2;
+        }
+        html.dark .ga-hive-panel-title {
+            color: #9ca3af;
+        }
+        .ga-hive-name-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 8px;
+        }
+        .ga-hive-name-grid label,
+        .ga-hive-control-grid label {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            min-width: 0;
+        }
+        .ga-hive-name-grid span,
+        .ga-hive-control-grid span {
+            flex: 0 0 auto;
+            color: #6b7280;
+            font-size: 12px;
+            line-height: 1;
+        }
+        html.dark .ga-hive-name-grid span,
+        html.dark .ga-hive-control-grid span {
+            color: #9ca3af;
+        }
+        .ga-hive-name-grid input,
+        .ga-hive-control-grid input,
+        .ga-hive-control-grid select {
+            min-width: 0;
+            width: 100%;
+            height: 32px;
+            border: 1px solid #d1d5db;
+            border-radius: 7px;
+            background: transparent;
+            padding: 0 9px;
+            color: #111827;
+            font-size: 12px;
+            outline: none;
+        }
+        html.dark .ga-hive-name-grid input,
+        html.dark .ga-hive-control-grid input,
+        html.dark .ga-hive-control-grid select {
+            border-color: #374151;
+            color: #f3f4f6;
+        }
+        .ga-hive-control-grid {
+            display: grid;
+            grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+            gap: 10px;
+            align-items: center;
+        }
+        .ga-hive-workbench {
+            display: grid;
+            grid-template-columns: minmax(0, 3fr) minmax(280px, 1fr);
+            gap: 16px;
+            align-items: start;
+        }
+        .ga-hive-config-column,
+        .ga-hive-side-column,
+        .ga-hive-bbs-column {
+            min-width: 0;
+        }
+        .ga-hive-side-column {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        .ga-hive-side-column .ga-hive-name-grid,
+        .ga-hive-side-column .ga-hive-control-grid {
+            grid-template-columns: 1fr;
+        }
+        .ga-hive-bbs-column {
+            overflow: hidden;
+            border: 1px solid #e5e7eb;
+            border-radius: 10px;
+        }
+        html.dark .ga-hive-bbs-column {
+            border-color: #374151;
+        }
+        .ga-hive-control-actions {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 6px;
+            min-width: 0;
+        }
+        .ga-hive-control-actions select {
+            flex: 1 1 148px;
+        }
+        .ga-hive-budget-inline {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 6px;
+            min-width: 0;
+        }
+        .ga-hive-budget-inline input {
+            flex: 0 0 64px;
+        }
         @media (max-width: 720px) {
             .ga-hive-status-strip,
             .ga-hive-settings-row {
@@ -370,6 +591,11 @@
             .ga-hive-status-item,
             .ga-hive-settings-row label {
                 flex-basis: calc(50% - 4px);
+            }
+            .ga-hive-name-grid,
+            .ga-hive-control-grid,
+            .ga-hive-workbench {
+                grid-template-columns: 1fr;
             }
         }
         .goal-mode-overlay {
@@ -435,7 +661,52 @@
             align-items: center;
         }
         .ga-chat-input {
-            padding-right: 6.25rem !important;
+            padding-right: 6.5rem !important;
+        }
+        .ga-input-tools {
+            position: absolute;
+            top: 50%;
+            right: 48px;
+            z-index: 2;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            transform: translateY(-50%);
+            padding: 4px;
+            border: 1px solid rgba(229, 231, 235, 0.95);
+            border-radius: 12px;
+            background: rgba(255, 255, 255, 0.9);
+            box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
+            backdrop-filter: blur(6px);
+        }
+        html.dark .ga-input-tools {
+            border-color: rgba(55, 65, 81, 0.95);
+            background: rgba(17, 24, 39, 0.92);
+        }
+        .ga-input-tool {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 32px;
+            height: 32px;
+            border-radius: 9px;
+            color: #4b5563;
+            transition: background-color 0.15s, color 0.15s, opacity 0.15s;
+        }
+        .ga-input-tool:hover:not(:disabled) {
+            background: #eef2ff;
+            color: #2563eb;
+        }
+        .ga-input-tool:disabled {
+            cursor: not-allowed;
+            opacity: 0.45;
+        }
+        html.dark .ga-input-tool {
+            color: #d1d5db;
+        }
+        html.dark .ga-input-tool:hover:not(:disabled) {
+            background: rgba(37, 99, 235, 0.22);
+            color: #bfdbfe;
         }
         .ga-attachment-list {
             display: flex;
@@ -468,6 +739,26 @@
             border-radius: 6px;
             background: rgba(229, 231, 235, 1);
         }
+        .ga-attachment-icon {
+            width: 46px;
+            height: 46px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 8px;
+            background: #e5efff;
+            color: #2563eb;
+        }
+        html.dark .ga-attachment-icon {
+            background: rgba(37, 99, 235, 0.16);
+            color: #93c5fd;
+        }
+        .ga-attachment-meta {
+            min-width: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 3px;
+        }
         .ga-attachment-name {
             min-width: 0;
             overflow: hidden;
@@ -476,6 +767,11 @@
             color: var(--text-secondary);
             font-size: 12px;
             line-height: 1.25;
+        }
+        .ga-attachment-kind {
+            color: #6b7280;
+            font-size: 11px;
+            line-height: 1;
         }
         .ga-attachment-remove {
             position: absolute;
@@ -570,9 +866,6 @@
             right: 8px;
             transform: translateY(-50%);
             z-index: 2;
-        }
-        .ga-image-button {
-            right: 48px;
         }
         .ga-session-bar {
             display: flex;
@@ -679,6 +972,258 @@
         html.dark .ga-session-close:hover {
             background: rgba(209, 213, 219, 0.16);
             color: #f9fafb;
+        }
+        .ga-history-search {
+            position: relative;
+        }
+        .ga-history-search-icon {
+            position: absolute;
+            left: 12px;
+            top: 50%;
+            z-index: 1;
+            display: inline-flex;
+            width: 20px;
+            height: 20px;
+            align-items: center;
+            justify-content: center;
+            transform: translateY(-50%);
+            color: #6b7280;
+            pointer-events: none;
+        }
+        .ga-history-search-input {
+            width: 100%;
+            height: 42px;
+            border: 1px solid #d1d5db;
+            border-radius: 8px;
+            background: #ffffff;
+            padding: 0 12px 0 42px;
+            color: #1f2937;
+            font-size: 14px;
+            line-height: 42px;
+            box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
+            transition: border-color 0.15s, box-shadow 0.15s, background-color 0.15s;
+        }
+        .ga-history-search-input::placeholder {
+            color: #9ca3af;
+        }
+        .ga-history-search-input:focus {
+            border-color: #3b82f6;
+            outline: none;
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.18);
+        }
+        html.dark .ga-history-search-icon {
+            color: #9ca3af;
+        }
+        html.dark .ga-history-search-input {
+            border-color: #374151;
+            background: #030712;
+            color: #f3f4f6;
+        }
+        .ga-orchestration {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+        .ga-orchestration-head {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 18px;
+            padding-bottom: 2px;
+        }
+        .ga-orchestration-copy {
+            min-width: 0;
+        }
+        .ga-orchestration-title {
+            color: #111827 !important;
+            font-size: 15px;
+            font-weight: 700;
+            line-height: 1.45;
+        }
+        .ga-orchestration-subtitle {
+            margin-top: 4px;
+            color: #6b7280 !important;
+            font-size: 13px;
+            line-height: 1.45;
+        }
+        .ga-orchestration-tabs {
+            display: inline-flex;
+            flex: 0 0 auto;
+            gap: 4px;
+            border: 1px solid #d1d5db;
+            border-radius: 8px;
+            background: #f9fafb;
+            padding: 4px;
+        }
+        .ga-orchestration-tab {
+            min-width: 56px;
+            border-radius: 6px;
+            padding: 6px 12px;
+            color: #6b7280 !important;
+            font-size: 13px;
+            line-height: 1;
+        }
+        .ga-orchestration-tab.is-active {
+            background: #ffffff !important;
+            color: #2563eb !important;
+            box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+        }
+        .ga-goal-status-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 12px;
+        }
+        .ga-goal-status-card {
+            min-width: 0;
+            min-height: 76px;
+            border: 1px solid #d1d5db;
+            border-radius: 10px;
+            background: #ffffff;
+            padding: 14px 16px;
+        }
+        .ga-goal-status-label,
+        .ga-goal-field-label {
+            color: #6b7280 !important;
+            font-size: 12px;
+            font-weight: 700;
+            line-height: 1.25;
+        }
+        .ga-goal-status-value {
+            margin-top: 12px;
+            color: #111827 !important;
+            font-size: 15px;
+            font-weight: 800;
+            line-height: 1.3;
+        }
+        .ga-goal-status-line {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-top: 12px;
+            min-width: 0;
+        }
+        .ga-goal-status-line .ga-goal-status-value {
+            margin-top: 0;
+        }
+        .ga-goal-form-grid {
+            display: grid;
+            grid-template-columns: minmax(0, 2fr) minmax(240px, 1fr);
+            gap: 18px;
+            align-items: start;
+        }
+        .ga-goal-main-fields,
+        .ga-goal-side-fields,
+        .ga-goal-actions {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            min-width: 0;
+        }
+        .ga-goal-field {
+            min-width: 0;
+        }
+        .ga-goal-field-head {
+            display: flex;
+            align-items: center;
+            justify-content: flex-start;
+            gap: 10px;
+            min-height: 30px;
+            margin-bottom: 8px;
+        }
+        .ga-goal-field-label {
+            display: block;
+            margin-bottom: 0;
+        }
+        .ga-goal-input,
+        .ga-goal-textarea {
+            width: 100%;
+            border: 1px solid #d1d5db;
+            border-radius: 8px;
+            background: #f9fafb !important;
+            color: #111827 !important;
+            font-size: 14px;
+            line-height: 1.45;
+            box-shadow: inset 0 1px 1px rgba(15, 23, 42, 0.03);
+            transition: border-color 0.15s, box-shadow 0.15s, background-color 0.15s;
+        }
+        .ga-goal-input {
+            height: 38px;
+            padding: 0 12px;
+        }
+        .ga-goal-textarea {
+            min-height: 96px;
+            padding: 12px;
+            resize: vertical;
+        }
+        .ga-goal-textarea.is-tall {
+            min-height: 112px;
+        }
+        .ga-goal-input:focus,
+        .ga-goal-textarea:focus {
+            border-color: #3b82f6 !important;
+            outline: none;
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.16);
+            background: #ffffff !important;
+        }
+        .ga-goal-pathbox {
+            border: 1px solid #d1d5db;
+            border-radius: 10px;
+            background: #ffffff;
+            padding: 12px 14px;
+            color: #4b5563 !important;
+            font-size: 12px;
+            line-height: 1.6;
+        }
+        .ga-goal-pathbox > div {
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        html.dark .ga-orchestration-title,
+        html.dark .ga-goal-status-value {
+            color: #f3f4f6 !important;
+        }
+        html.dark .ga-orchestration-subtitle,
+        html.dark .ga-goal-status-label,
+        html.dark .ga-goal-field-label,
+        html.dark .ga-goal-pathbox {
+            color: #9ca3af !important;
+        }
+        html.dark .ga-orchestration-tabs,
+        html.dark .ga-goal-status-card,
+        html.dark .ga-goal-pathbox {
+            border-color: #374151;
+            background: #111827;
+        }
+        html.dark .ga-orchestration-tab.is-active {
+            background: #1f2937 !important;
+            color: #93c5fd !important;
+        }
+        html.dark .ga-goal-input,
+        html.dark .ga-goal-textarea {
+            border-color: #374151;
+            background: #111827 !important;
+            color: #f3f4f6 !important;
+        }
+        html.dark .ga-goal-input:focus,
+        html.dark .ga-goal-textarea:focus {
+            background: #0f172a !important;
+        }
+        @media (max-width: 860px) {
+            .ga-orchestration-head {
+                flex-direction: column;
+            }
+            .ga-orchestration-tabs {
+                width: 100%;
+            }
+            .ga-orchestration-tab {
+                flex: 1 1 0;
+            }
+            .ga-goal-status-grid,
+            .ga-goal-form-grid {
+                grid-template-columns: 1fr;
+            }
         }
         .ga-todo-textarea {
             width: 100%;
@@ -1402,6 +1947,178 @@
             background: linear-gradient(135deg, #dc2626, #991b1b) !important;
         }
 
+        /* Soft tactile control language */
+        .ga-btn,
+        .ga-input-tool,
+        .ga-session-tab,
+        .ga-orchestration-tab,
+        .ga-pet-skin-pill {
+            border-color: rgba(203, 213, 225, 0.74) !important;
+            background: linear-gradient(145deg, #ffffff 0%, #eef3f9 100%) !important;
+            box-shadow:
+                5px 5px 12px rgba(148, 163, 184, 0.18),
+                -5px -5px 12px rgba(255, 255, 255, 0.9),
+                inset 0 0 0 1px rgba(255, 255, 255, 0.68);
+        }
+        .ga-btn:hover:not(:disabled),
+        .ga-input-tool:hover:not(:disabled),
+        .ga-session-tab:hover,
+        .ga-orchestration-tab:hover,
+        .ga-pet-skin-pill:hover {
+            transform: translateY(-1px);
+            box-shadow:
+                7px 7px 15px rgba(148, 163, 184, 0.2),
+                -6px -6px 14px rgba(255, 255, 255, 0.94),
+                inset 0 0 0 1px rgba(255, 255, 255, 0.76);
+        }
+        .ga-btn:active:not(:disabled),
+        .ga-input-tool:active:not(:disabled),
+        .ga-session-tab:active,
+        .ga-orchestration-tab:active,
+        .ga-pet-skin-pill:active {
+            transform: translateY(0);
+            box-shadow:
+                inset 4px 4px 8px rgba(148, 163, 184, 0.2),
+                inset -4px -4px 8px rgba(255, 255, 255, 0.84);
+        }
+        .ga-btn-primary {
+            border-color: rgba(20, 184, 166, 0.28) !important;
+            background: linear-gradient(135deg, #71e2c5 0%, #4bbfd6 100%) !important;
+            color: #073042 !important;
+            box-shadow:
+                7px 8px 18px rgba(45, 156, 173, 0.2),
+                -5px -5px 13px rgba(255, 255, 255, 0.76),
+                inset 0 1px 0 rgba(255, 255, 255, 0.58);
+        }
+        .ga-btn-primary:hover:not(:disabled) {
+            background: linear-gradient(135deg, #80ecd1 0%, #5bc9df 100%) !important;
+            box-shadow:
+                9px 10px 22px rgba(45, 156, 173, 0.25),
+                -5px -5px 13px rgba(255, 255, 255, 0.82);
+        }
+        .ga-btn-danger {
+            background: linear-gradient(145deg, #fff7f7 0%, #fbdede 100%) !important;
+            box-shadow:
+                5px 5px 12px rgba(248, 113, 113, 0.14),
+                -5px -5px 12px rgba(255, 255, 255, 0.9),
+                inset 0 0 0 1px rgba(255, 255, 255, 0.72);
+        }
+        .ga-input-tools,
+        .ga-compose-panel,
+        .ga-hive-compact-panel,
+        .ga-token-card,
+        .ga-attachment-item,
+        .ga-goal-status-card,
+        .ga-goal-pathbox {
+            border-color: rgba(203, 213, 225, 0.72) !important;
+            background: linear-gradient(145deg, rgba(255, 255, 255, 0.96), rgba(241, 245, 249, 0.92)) !important;
+            box-shadow:
+                7px 7px 18px rgba(148, 163, 184, 0.14),
+                -7px -7px 18px rgba(255, 255, 255, 0.84),
+                inset 0 0 0 1px rgba(255, 255, 255, 0.62);
+        }
+        .ga-chat-input,
+        .ga-history-search-input,
+        .ga-goal-input,
+        .ga-goal-textarea,
+        .ga-modal-panel input[type="text"],
+        .ga-modal-panel input[type="password"],
+        .ga-modal-panel input[type="number"],
+        .ga-modal-panel select,
+        .ga-modal-panel textarea,
+        .ga-hive-name-grid input,
+        .ga-hive-control-grid input,
+        .ga-hive-control-grid select,
+        .ga-hive-settings-row input {
+            border-color: rgba(203, 213, 225, 0.72) !important;
+            background: linear-gradient(145deg, #f8fafc, #ffffff) !important;
+            box-shadow:
+                inset 4px 4px 8px rgba(148, 163, 184, 0.13),
+                inset -4px -4px 8px rgba(255, 255, 255, 0.88);
+        }
+        .ga-chat-input:focus,
+        .ga-history-search-input:focus,
+        .ga-goal-input:focus,
+        .ga-goal-textarea:focus,
+        .ga-modal-panel input[type="text"]:focus,
+        .ga-modal-panel input[type="password"]:focus,
+        .ga-modal-panel input[type="number"]:focus,
+        .ga-modal-panel select:focus,
+        .ga-modal-panel textarea:focus,
+        .ga-hive-name-grid input:focus,
+        .ga-hive-control-grid input:focus,
+        .ga-hive-control-grid select:focus,
+        .ga-hive-settings-row input:focus {
+            border-color: rgba(80, 190, 205, 0.62) !important;
+            background: #ffffff !important;
+            box-shadow:
+                inset 3px 3px 7px rgba(148, 163, 184, 0.11),
+                inset -3px -3px 7px rgba(255, 255, 255, 0.92),
+                0 0 0 3px rgba(86, 183, 216, 0.18) !important;
+        }
+        .ga-session-tab.is-active,
+        .ga-orchestration-tab.is-active {
+            border-color: rgba(86, 183, 216, 0.5) !important;
+            background: linear-gradient(145deg, #e8fbf8, #dff4fb) !important;
+            color: #0f6f7a !important;
+            box-shadow:
+                inset 3px 3px 7px rgba(46, 129, 150, 0.12),
+                inset -3px -3px 8px rgba(255, 255, 255, 0.78);
+        }
+        html.dark .ga-btn,
+        html.dark .ga-input-tool,
+        html.dark .ga-session-tab,
+        html.dark .ga-orchestration-tab,
+        html.dark .ga-pet-skin-pill {
+            border-color: rgba(75, 85, 99, 0.82) !important;
+            background: linear-gradient(145deg, #273241, #151c27) !important;
+            box-shadow:
+                5px 5px 12px rgba(0, 0, 0, 0.28),
+                -4px -4px 10px rgba(255, 255, 255, 0.04),
+                inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+        }
+        html.dark .ga-input-tools,
+        html.dark .ga-compose-panel,
+        html.dark .ga-hive-compact-panel,
+        html.dark .ga-token-card,
+        html.dark .ga-attachment-item,
+        html.dark .ga-goal-status-card,
+        html.dark .ga-goal-pathbox {
+            border-color: rgba(75, 85, 99, 0.82) !important;
+            background: linear-gradient(145deg, rgba(31, 41, 55, 0.96), rgba(15, 23, 42, 0.94)) !important;
+            box-shadow:
+                7px 7px 18px rgba(0, 0, 0, 0.26),
+                -5px -5px 14px rgba(255, 255, 255, 0.035),
+                inset 0 0 0 1px rgba(255, 255, 255, 0.035);
+        }
+        html.dark .ga-chat-input,
+        html.dark .ga-history-search-input,
+        html.dark .ga-goal-input,
+        html.dark .ga-goal-textarea,
+        html.dark .ga-modal-panel input[type="text"],
+        html.dark .ga-modal-panel input[type="password"],
+        html.dark .ga-modal-panel input[type="number"],
+        html.dark .ga-modal-panel select,
+        html.dark .ga-modal-panel textarea,
+        html.dark .ga-hive-name-grid input,
+        html.dark .ga-hive-control-grid input,
+        html.dark .ga-hive-control-grid select,
+        html.dark .ga-hive-settings-row input {
+            border-color: rgba(75, 85, 99, 0.82) !important;
+            background: linear-gradient(145deg, #111827, #0b1220) !important;
+            box-shadow:
+                inset 4px 4px 8px rgba(0, 0, 0, 0.28),
+                inset -4px -4px 8px rgba(255, 255, 255, 0.035);
+        }
+        html.dark .ga-session-tab.is-active,
+        html.dark .ga-orchestration-tab.is-active {
+            background: linear-gradient(145deg, rgba(20, 184, 166, 0.24), rgba(37, 99, 235, 0.2)) !important;
+            color: #a7f3d0 !important;
+            box-shadow:
+                inset 3px 3px 7px rgba(0, 0, 0, 0.22),
+                inset -3px -3px 8px rgba(255, 255, 255, 0.04);
+        }
+
         .ga-pet-switch {
             position: relative;
             display: inline-flex;
@@ -1688,12 +2405,12 @@
                     <div class="pt-2 border-t border-blue-200 dark:border-blue-800 space-y-2">
                          <div class="flex items-center justify-between">
                             <span class="text-xs text-gray-500 dark:text-gray-400">自主行动</span>
-                            <button @click="toggleAutonomous" 
-                                class="relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
-                                :class="status.autonomous_enabled ? 'bg-green-500' : 'bg-gray-300'">
-                                <span class="inline-block h-3 w-3 transform rounded-full bg-white transition duration-200 ease-in-out"
-                                    :class="status.autonomous_enabled ? 'translate-x-5' : 'translate-x-1'"></span>
-                            </button>
+                            <label class="ga-pet-switch" :title="status.autonomous_enabled ? '关闭自主行动' : '打开自主行动'">
+                                <input type="checkbox" :checked="status.autonomous_enabled" aria-label="自主行动" @change="toggleAutonomous" />
+                                <span class="ga-pet-switch-track">
+                                    <span class="ga-pet-switch-thumb"></span>
+                                </span>
+                            </label>
                         </div>
                         <div v-if="status.autonomous_enabled" class="space-y-1">
                              <div class="flex items-center justify-between text-xs text-gray-400">
@@ -1745,7 +2462,7 @@
                             数据备份
                         </button>
                         <button @click="openModal('communication')" class="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-md transition-colors">
-                            <i data-lucide="messages-square" class="w-4 h-4"></i>
+                            <i data-lucide="smartphone" class="w-4 h-4"></i>
                             通信工具
                         </button>
                         <button @click="openOrchestrationConsole" class="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-md transition-colors">
@@ -1915,39 +2632,59 @@
                         <div v-if="interventionNotice" class="mt-1 text-xs text-green-600 dark:text-green-400">{{ interventionNotice }}</div>
                         <div v-if="interventionError" class="mt-1 text-xs text-red-600 dark:text-red-400">{{ interventionError }}</div>
                     </div>
-                    <div v-if="attachedImages.length" class="ga-attachment-list">
+                    <div v-if="attachedImages.length || attachedPaths.length" class="ga-attachment-list">
                         <div v-for="img in attachedImages" :key="img.id" class="ga-attachment-item">
                             <img :src="img.dataUrl" :alt="img.name" class="ga-attachment-thumb" />
-                            <div class="ga-attachment-name" :title="img.name">{{ img.name }}</div>
+                            <div class="ga-attachment-meta">
+                                <div class="ga-attachment-name" :title="img.name">{{ img.name }}</div>
+                                <div class="ga-attachment-kind">图片</div>
+                            </div>
                             <button @click="removeAttachedImage(img.id)" class="ga-attachment-remove" title="移除图片">
+                                <i data-lucide="x" class="h-3 w-3"></i>
+                            </button>
+                        </div>
+                        <div v-for="item in attachedPaths" :key="item.id" class="ga-attachment-item" :title="item.path">
+                            <div class="ga-attachment-icon">
+                                <i :data-lucide="iconForPathAttachment(item)" class="h-5 w-5"></i>
+                            </div>
+                            <div class="ga-attachment-meta">
+                                <div class="ga-attachment-name">{{ item.name }}</div>
+                                <div class="ga-attachment-kind">{{ pathAttachmentLabel(item) }}</div>
+                            </div>
+                            <button @click="removePathAttachment('chat', item.id)" class="ga-attachment-remove" title="移除附件">
                                 <i data-lucide="x" class="h-3 w-3"></i>
                             </button>
                         </div>
                     </div>
                     <div v-if="attachmentError" class="mb-2 text-xs text-red-600 dark:text-red-400">{{ attachmentError }}</div>
-                    <div class="ga-input-wrap" @drop.prevent="handleInputDrop" @dragover.prevent>
+                    <div class="ga-input-wrap" @drop.prevent="handleInputDrop" @dragover.prevent @dragenter.prevent>
                         <input ref="fileInputRef" type="file" accept="image/*" multiple class="hidden" @change="handleImagePicker" />
                         <textarea 
                             v-model="inputMessage" 
                             @keydown="handleInputKeydown"
                             @paste="handleInputPaste"
+                            @focus="setPathTarget('chat')"
+                            @dragenter="setPathTarget('chat')"
                             @compositionstart="handleCompositionStart"
                             @compositionend="handleCompositionEnd"
                             placeholder="输入指令..." 
                             class="ga-chat-input w-full bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500/50 resize-none h-14 max-h-48 transition-all scrollbar-hide text-sm sm:text-base"
                             rows="1"
                         ></textarea>
-                        <button 
-                            @click="triggerImagePicker" 
-                            :disabled="activeSessionRunning || attachmentUploading"
-                            class="ga-send-button ga-image-button p-2 bg-gray-100 hover:bg-gray-200 text-gray-600 dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-200 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm"
-                            title="添加图片"
-                        >
-                            <i data-lucide="image-plus" class="w-4 h-4"></i>
-                        </button>
+                        <div class="ga-input-tools" aria-label="添加附件">
+                            <button
+                                @click="triggerImagePicker"
+                                :disabled="activeSessionRunning || attachmentUploading"
+                                class="ga-input-tool"
+                                title="添加附件；文件或目录可直接拖入输入框"
+                                aria-label="添加附件"
+                            >
+                                <i data-lucide="paperclip" class="w-4 h-4"></i>
+                            </button>
+                        </div>
                         <button 
                             @click="sendMessage" 
-                            :disabled="(!inputMessage.trim() && !attachedImages.length) || activeSessionRunning || attachmentUploading"
+                            :disabled="(!inputMessage.trim() && !attachedImages.length && !attachedPaths.length) || activeSessionRunning || attachmentUploading"
                             class="ga-send-button p-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm"
                         >
                             <i v-if="!activeSessionRunning && !attachmentUploading" data-lucide="send" class="w-4 h-4"></i>
@@ -1956,7 +2693,7 @@
                     </div>
                 </div>
                 <div class="text-center mt-2 text-xs text-gray-400 dark:text-gray-500 hidden sm:block">
-                    按 Enter 发送 • Shift + Enter 换行 • 可粘贴/拖入图片
+                    按 Enter 发送 • Shift + Enter 换行 • 可拖入文件/目录，或点击按钮添加图片
                 </div>
             </div>
         </main>
@@ -1978,7 +2715,7 @@
                         <template v-else-if="activeModal === 'orchestration'">编排控制台</template>
                         <template v-else-if="activeModal === 'pet'">桌面宠物</template>
                     </div>
-                    <button @click="closeModal" class="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-500 dark:text-gray-300">
+                    <button @click="closeModal" class="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-500 dark:text-gray-300" title="关闭弹窗" aria-label="关闭弹窗">
                         <i data-lucide="x" class="w-5 h-5"></i>
                     </button>
                 </div>
@@ -2161,11 +2898,11 @@
                                     <button @click="refreshHistoryData" class="ga-btn ga-btn-xs ga-btn-secondary">刷新</button>
                                 </div>
                             </div>
-                            <div class="relative">
-                                <div class="pointer-events-none absolute inset-y-0 left-0 flex w-11 items-center justify-center border-r border-gray-200 text-gray-400 dark:border-gray-700">
+                            <div class="ga-history-search">
+                                <div class="ga-history-search-icon">
                                     <i data-lucide="search" class="h-4 w-4"></i>
                                 </div>
-                                <input v-model="historySearchQuery" class="w-full rounded-lg border border-gray-300 bg-white py-2.5 pl-14 pr-3 text-sm text-gray-800 shadow-sm transition focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100" placeholder="搜索历史对话..." />
+                                <input v-model="historySearchQuery" class="ga-history-search-input" placeholder="搜索历史对话..." />
                             </div>
                             <div v-if="historySearchError" class="text-sm text-red-600 dark:text-red-400">{{ historySearchError }}</div>
                             <div v-if="selectedHistorySessionId" class="flex items-center gap-2">
@@ -2335,61 +3072,83 @@
                     </template>
 
                     <template v-else-if="activeModal === 'orchestration'">
-                        <div class="space-y-4">
-                            <div class="flex flex-wrap items-center justify-between gap-3">
-                                <div class="min-w-0">
-                                    <div class="text-sm font-medium text-gray-800 dark:text-gray-100">后台编排适合长任务；输入框上的 @goal 仍用于当前对话的临时目标模式。</div>
-                                    <div class="text-xs text-gray-500 dark:text-gray-400 mt-1">Goal 是单 agent 持续推进；Hive 是 master 拆任务，多 worker 通过 BBS 协作。</div>
+                        <div class="ga-orchestration">
+                            <div class="ga-orchestration-head">
+                                <div class="ga-orchestration-copy">
+                                    <div class="ga-orchestration-title">后台编排适合长任务；输入框上的 @goal 仍用于当前对话的临时目标模式。</div>
+                                    <div class="ga-orchestration-subtitle">Goal 是单 agent 持续推进；Hive 是 master 拆任务，多 worker 通过 BBS 协作。</div>
                                 </div>
-                                <div class="inline-flex rounded-md border border-gray-200 bg-gray-50 p-1 text-xs dark:border-gray-700 dark:bg-gray-900">
-                                    <button @click="switchOrchestrationTab('goal')" class="rounded px-3 py-1.5" :class="orchestrationTab === 'goal' ? 'bg-white text-blue-700 shadow-sm dark:bg-gray-800 dark:text-blue-300' : 'text-gray-500 dark:text-gray-400'">Goal</button>
-                                    <button @click="switchOrchestrationTab('hive')" class="rounded px-3 py-1.5" :class="orchestrationTab === 'hive' ? 'bg-white text-blue-700 shadow-sm dark:bg-gray-800 dark:text-blue-300' : 'text-gray-500 dark:text-gray-400'">Hive</button>
+                                <div class="ga-orchestration-tabs">
+                                    <button @click="switchOrchestrationTab('goal')" class="ga-orchestration-tab" :class="{ 'is-active': orchestrationTab === 'goal' }">Goal</button>
+                                    <button @click="switchOrchestrationTab('hive')" class="ga-orchestration-tab" :class="{ 'is-active': orchestrationTab === 'hive' }">Hive</button>
                                 </div>
                             </div>
 
-                            <div v-if="orchestrationTab === 'goal'" class="space-y-4">
-                                <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
-                                    <div class="rounded-lg border border-gray-200 dark:border-gray-700 p-4">
-                                        <div class="text-xs text-gray-500 dark:text-gray-400">运行状态</div>
-                                        <div class="mt-2 flex items-center gap-2">
+                            <div v-if="orchestrationTab === 'goal'" class="ga-orchestration">
+                                <div class="ga-goal-status-grid">
+                                    <div class="ga-goal-status-card">
+                                        <div class="ga-goal-status-label">运行状态</div>
+                                        <div class="ga-goal-status-line">
                                             <span class="h-2.5 w-2.5 rounded-full" :class="goalState && goalState.running ? 'bg-green-500 animate-pulse' : 'bg-gray-400'"></span>
-                                            <span class="text-sm font-semibold text-gray-800 dark:text-gray-100">{{ goalState && goalState.running ? '后台推进中' : ((goalState && goalState.state && goalState.state.status) || '未启动') }}</span>
+                                            <span class="ga-goal-status-value !mt-0 truncate">{{ goalState && goalState.running ? '后台推进中' : ((goalState && goalState.state && goalState.state.status) || '未启动') }}</span>
                                         </div>
                                     </div>
-                                    <div class="rounded-lg border border-gray-200 dark:border-gray-700 p-4">
-                                        <div class="text-xs text-gray-500 dark:text-gray-400">剩余预算</div>
-                                        <div class="mt-2 text-sm font-semibold text-gray-800 dark:text-gray-100">{{ formatGoalMinutes(goalState && goalState.remaining_seconds) }}</div>
+                                    <div class="ga-goal-status-card">
+                                        <div class="ga-goal-status-label">剩余预算</div>
+                                        <div class="ga-goal-status-value">{{ formatGoalMinutes(goalState && goalState.remaining_seconds) }}</div>
                                     </div>
-                                    <div class="rounded-lg border border-gray-200 dark:border-gray-700 p-4">
-                                        <div class="text-xs text-gray-500 dark:text-gray-400">推进轮次</div>
-                                        <div class="mt-2 text-sm font-semibold text-gray-800 dark:text-gray-100">{{ (goalState && goalState.state && goalState.state.turns_used) || 0 }} / {{ (goalState && goalState.state && goalState.state.max_turns) || goalMaxTurns }}</div>
+                                    <div class="ga-goal-status-card">
+                                        <div class="ga-goal-status-label">推进轮次</div>
+                                        <div class="ga-goal-status-value">{{ (goalState && goalState.state && goalState.state.turns_used) || 0 }} / {{ (goalState && goalState.state && goalState.state.max_turns) || goalMaxTurns }}</div>
                                     </div>
                                 </div>
 
                                 <div v-if="goalNotice" class="text-sm text-green-700 dark:text-green-400">{{ goalNotice }}</div>
                                 <div v-if="goalError" class="text-sm text-red-600 dark:text-red-400">{{ goalError }}</div>
 
-                                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-                                    <div class="md:col-span-2 space-y-3">
-                                        <div>
-                                            <div class="text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1">要持续推进的目标</div>
-                                            <textarea v-model="goalObjective" class="w-full min-h-32 rounded-md border border-gray-300 bg-transparent px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-700 dark:text-gray-100" placeholder="写清楚最终目标、成功标准、不要做什么。"></textarea>
+                                <div class="ga-goal-form-grid">
+                                    <div class="ga-goal-main-fields">
+                                        <div class="ga-goal-field ga-compose-panel">
+                                            <div class="ga-compose-top">
+                                                <label class="ga-goal-field-label">要持续推进的目标</label>
+                                                <div class="ga-path-actions" aria-label="目标附件">
+                                                    <button @click="pickNativePath('goal', 'file')" :disabled="pathPickerBusy || (goalState && goalState.running)" class="ga-btn ga-btn-secondary ga-path-chip" title="添加文件附件"><i data-lucide="file-plus"></i><span>文件</span></button>
+                                                    <button @click="pickNativePath('goal', 'directory')" :disabled="pathPickerBusy || (goalState && goalState.running)" class="ga-btn ga-btn-secondary ga-path-chip" title="添加目录附件"><i data-lucide="folder-open"></i><span>目录</span></button>
+                                                </div>
+                                            </div>
+                                            <div class="ga-compose-body">
+                                                <textarea v-model="goalObjective" class="ga-goal-textarea is-tall" placeholder="写清楚最终目标、成功标准、不要做什么。" @focus="setPathTarget('goal')" @drop.prevent="handleGoalObjectiveDrop" @dragover.prevent @dragenter.prevent="setPathTarget('goal')"></textarea>
+                                                <div v-if="goalPathAttachments.length" class="ga-attachment-list ga-compose-attachments">
+                                                    <div v-for="item in goalPathAttachments" :key="item.id" class="ga-attachment-item" :title="item.path">
+                                                        <div class="ga-attachment-icon">
+                                                            <i :data-lucide="iconForPathAttachment(item)" class="h-5 w-5"></i>
+                                                        </div>
+                                                        <div class="ga-attachment-meta">
+                                                            <div class="ga-attachment-name">{{ item.name }}</div>
+                                                            <div class="ga-attachment-kind">{{ pathAttachmentLabel(item) }}</div>
+                                                        </div>
+                                                        <button @click="removePathAttachment('goal', item.id)" class="ga-attachment-remove" title="移除附件">
+                                                            <i data-lucide="x" class="h-3 w-3"></i>
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            </div>
                                         </div>
-                                        <div>
-                                            <div class="text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1">预算耗尽时怎么收口</div>
-                                            <textarea v-model="goalDonePrompt" class="w-full min-h-16 rounded-md border border-gray-300 bg-transparent px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-700 dark:text-gray-100" placeholder="可留空；例如：汇总改动、列出未完成项、不要继续新增功能。"></textarea>
+                                        <div class="ga-goal-field">
+                                            <label class="ga-goal-field-label">预算耗尽时怎么收口</label>
+                                            <textarea v-model="goalDonePrompt" class="ga-goal-textarea" placeholder="可留空；例如：汇总改动、列出未完成项、不要继续新增功能。"></textarea>
                                         </div>
                                     </div>
-                                    <div class="space-y-3">
-                                        <label class="block">
-                                            <span class="text-xs text-gray-500 dark:text-gray-400">预算分钟</span>
-                                            <input v-model.number="goalBudgetMinutes" type="number" min="1" max="1440" class="mt-1 w-full rounded-md border border-gray-300 bg-transparent px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-700 dark:text-gray-100" />
+                                    <div class="ga-goal-side-fields">
+                                        <label class="ga-goal-field">
+                                            <span class="ga-goal-field-label">预算分钟</span>
+                                            <input v-model.number="goalBudgetMinutes" type="number" min="1" max="1440" class="ga-goal-input" />
                                         </label>
-                                        <label class="block">
-                                            <span class="text-xs text-gray-500 dark:text-gray-400">最大轮次</span>
-                                            <input v-model.number="goalMaxTurns" type="number" min="1" max="500" class="mt-1 w-full rounded-md border border-gray-300 bg-transparent px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-700 dark:text-gray-100" />
+                                        <label class="ga-goal-field">
+                                            <span class="ga-goal-field-label">最大轮次</span>
+                                            <input v-model.number="goalMaxTurns" type="number" min="1" max="500" class="ga-goal-input" />
                                         </label>
-                                        <div class="space-y-2 pt-2">
+                                        <div class="ga-goal-actions pt-2">
                                             <button @click="startGoalMode" :disabled="goalLoading || (goalState && goalState.running)" class="ga-btn ga-btn-primary w-full justify-center">{{ goalLoading ? '处理中...' : '启动 Goal' }}</button>
                                             <button @click="stopGoalMode" :disabled="goalLoading || !(goalState && goalState.running)" class="ga-btn ga-btn-danger w-full justify-center">停止 Goal</button>
                                             <button @click="fetchGoalStatus" :disabled="goalLoading" class="ga-btn ga-btn-secondary w-full justify-center">刷新状态</button>
@@ -2397,9 +3156,9 @@
                                     </div>
                                 </div>
 
-                                <div class="rounded-lg border border-gray-200 dark:border-gray-700 p-3 text-xs text-gray-500 dark:text-gray-400 space-y-1">
-                                    <div class="truncate">state: {{ goalState && goalState.state_path }}</div>
-                                    <div class="truncate">log: {{ goalState && goalState.log_path }}</div>
+                                <div class="ga-goal-pathbox">
+                                    <div>state: {{ goalState && goalState.state_path }}</div>
+                                    <div>log: {{ goalState && goalState.log_path }}</div>
                                     <div v-if="goalState && goalState.pid">pid: {{ goalState.pid }}</div>
                                 </div>
                             </div>
@@ -2432,11 +3191,33 @@
                                 <div v-if="hiveNotice" class="text-sm text-green-700 dark:text-green-400">{{ hiveNotice }}</div>
                                 <div v-if="hiveError" class="text-sm text-red-600 dark:text-red-400">{{ hiveError }}</div>
 
-                                <div class="grid grid-cols-1 lg:grid-cols-5 gap-4">
-                                    <div class="lg:col-span-3 space-y-3">
-                                        <div>
-                                            <div class="text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1">要交给团队协作的目标</div>
-                                            <textarea v-model="hiveObjective" class="w-full min-h-24 rounded-md border border-gray-300 bg-transparent px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-700 dark:text-gray-100" placeholder="适合需要拆解、并行验证、多人协作的目标。"></textarea>
+                                <div class="ga-hive-workbench">
+                                    <div class="ga-hive-config-column space-y-3">
+                                        <div class="ga-compose-panel">
+                                            <div class="ga-compose-top">
+                                                <div class="ga-goal-field-label">要交给团队协作的目标</div>
+                                                <div class="ga-path-actions" aria-label="团队附件">
+                                                    <button @click="pickNativePath('hive', 'file')" :disabled="pathPickerBusy || (hiveState && hiveState.running)" class="ga-btn ga-btn-secondary ga-path-chip" title="添加文件附件"><i data-lucide="file-plus"></i><span>文件</span></button>
+                                                    <button @click="pickNativePath('hive', 'directory')" :disabled="pathPickerBusy || (hiveState && hiveState.running)" class="ga-btn ga-btn-secondary ga-path-chip" title="添加目录附件"><i data-lucide="folder-open"></i><span>目录</span></button>
+                                                </div>
+                                            </div>
+                                            <div class="ga-compose-body">
+                                                <textarea v-model="hiveObjective" class="ga-goal-textarea is-tall" placeholder="适合需要拆解、并行验证、多人协作的目标。" @focus="setPathTarget('hive')" @drop.prevent="handleHiveObjectiveDrop" @dragover.prevent @dragenter.prevent="setPathTarget('hive')"></textarea>
+                                                <div v-if="hivePathAttachments.length" class="ga-attachment-list ga-compose-attachments">
+                                                    <div v-for="item in hivePathAttachments" :key="item.id" class="ga-attachment-item" :title="item.path">
+                                                        <div class="ga-attachment-icon">
+                                                            <i :data-lucide="iconForPathAttachment(item)" class="h-5 w-5"></i>
+                                                        </div>
+                                                        <div class="ga-attachment-meta">
+                                                            <div class="ga-attachment-name">{{ item.name }}</div>
+                                                            <div class="ga-attachment-kind">{{ pathAttachmentLabel(item) }}</div>
+                                                        </div>
+                                                        <button @click="removePathAttachment('hive', item.id)" class="ga-attachment-remove" title="移除附件">
+                                                            <i data-lucide="x" class="h-3 w-3"></i>
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            </div>
                                         </div>
                                         <div class="ga-hive-settings-row">
                                             <label>
@@ -2458,37 +3239,7 @@
                                             <button @click="refreshHivePanel" :disabled="hiveLoading || hivePostsLoading" class="ga-btn ga-btn-secondary">刷新状态/BBS</button>
                                             <a v-if="hiveBbsUrl || (hiveState && hiveState.state && hiveState.state.bbs_url)" :href="hiveBbsUrl || hiveState.state.bbs_url" target="_blank" class="ga-btn ga-btn-secondary">打开 BBS</a>
                                         </div>
-                                        <div class="grid grid-cols-1 md:grid-cols-2 gap-2 rounded-lg border border-gray-200 dark:border-gray-700 p-2">
-                                            <div class="flex flex-wrap items-center gap-2">
-                                                <select v-model="hiveControlTarget" class="rounded-md border border-gray-300 bg-transparent px-2 py-1.5 text-xs text-gray-800 focus:outline-none dark:border-gray-700 dark:text-gray-100">
-                                                    <option value="all">全部 agent</option>
-                                                    <option value="master">Master</option>
-                                                    <option value="workers">全部 worker</option>
-                                                    <option value="worker-1">Worker 1</option>
-                                                    <option value="worker-2">Worker 2</option>
-                                                </select>
-                                                <button @click="hiveControlAgent('pause')" :disabled="hiveLoading" class="ga-btn ga-btn-xs ga-btn-secondary">暂停</button>
-                                                <button @click="hiveControlAgent('resume')" :disabled="hiveLoading" class="ga-btn ga-btn-xs ga-btn-secondary">继续</button>
-                                                <button @click="hiveControlAgent('stop')" :disabled="hiveLoading" class="ga-btn ga-btn-xs ga-btn-danger">停止选中</button>
-                                            </div>
-                                            <div class="flex flex-wrap items-center gap-2">
-                                                <span class="text-xs text-gray-500 dark:text-gray-400">追加</span>
-                                                <input v-model.number="hiveExtendMinutes" type="number" min="0" max="1440" class="w-16 rounded-md border border-gray-300 bg-transparent px-2 py-1.5 text-xs text-gray-800 focus:outline-none dark:border-gray-700 dark:text-gray-100" />
-                                                <span class="text-xs text-gray-500 dark:text-gray-400">分钟</span>
-                                                <input v-model.number="hiveExtendTurns" type="number" min="0" max="500" class="w-16 rounded-md border border-gray-300 bg-transparent px-2 py-1.5 text-xs text-gray-800 focus:outline-none dark:border-gray-700 dark:text-gray-100" />
-                                                <span class="text-xs text-gray-500 dark:text-gray-400">轮</span>
-                                                <button @click="extendHiveBudget" :disabled="hiveLoading" class="ga-btn ga-btn-xs ga-btn-secondary">追加预算</button>
-                                            </div>
-                                        </div>
-                                        <div class="rounded-lg border border-gray-200 dark:border-gray-700 p-3 text-xs text-gray-500 dark:text-gray-400 space-y-1">
-                                            <div class="truncate">workspace: {{ hiveState && hiveState.state && hiveState.state.hive_root }}</div>
-                                            <div class="truncate">outputs: {{ hiveState && hiveState.output_dir }} <span v-if="hiveState && hiveState.recent_outputs">({{ hiveState.recent_outputs.length }} recent)</span></div>
-                                            <div class="truncate">state: {{ hiveState && hiveState.state_path }}</div>
-                                            <div v-if="hiveState && hiveState.master_pid">master pid: {{ hiveState.master_pid }}</div>
-                                            <div v-if="hiveState && hiveState.worker_pids && hiveState.worker_pids.length">worker pids: {{ hiveState.worker_pids.join(', ') }}</div>
-                                        </div>
-                                    </div>
-                                    <div class="lg:col-span-2 rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
+                                        <div class="ga-hive-bbs-column">
                                         <div class="flex items-center justify-between gap-2 px-3 py-2 bg-gray-50 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700">
                                             <div>
                                                 <div class="text-xs font-semibold text-gray-700 dark:text-gray-200">BBS 协作动态</div>
@@ -2519,10 +3270,7 @@
                                                 <button @click="postHiveMessage" :disabled="hivePosting || !hivePostContent.trim()" class="ga-btn ga-btn-xs ga-btn-primary">{{ hivePosting ? '发送中' : '发帖' }}</button>
                                             </div>
                                             <div class="flex flex-wrap gap-1">
-                                                <button @click="appendHiveMention('@master')" class="ga-btn ga-btn-xs ga-btn-secondary">@master</button>
-                                                <button @click="appendHiveMention('@worker-1')" class="ga-btn ga-btn-xs ga-btn-secondary">@worker-1</button>
-                                                <button @click="appendHiveMention('@worker-2')" class="ga-btn ga-btn-xs ga-btn-secondary">@worker-2</button>
-                                                <button @click="appendHiveMention('@all')" class="ga-btn ga-btn-xs ga-btn-secondary">@all</button>
+                                                <button v-for="mention in hiveMentionButtons" :key="mention.value" @click="appendHiveMention(mention.value)" class="ga-btn ga-btn-xs ga-btn-secondary">{{ mention.label }}</button>
                                             </div>
                                             <textarea v-model="hivePostContent" class="w-full min-h-16 rounded-md border border-gray-300 bg-transparent px-2 py-2 text-xs text-gray-800 focus:outline-none dark:border-gray-700 dark:text-gray-100" placeholder="给 master / worker 留言，例如：优先检查前端入口是否正确。"></textarea>
                                         </div>
@@ -2544,6 +3292,56 @@
                                             </div>
                                         </div>
                                     </div>
+                                    </div>
+                                    <div class="ga-hive-side-column">
+                                        <div class="ga-hive-compact-panel">
+                                            <div class="ga-hive-panel-title">启动前命名</div>
+                                            <div class="ga-hive-name-grid">
+                                                <label>
+                                                    <span>Master</span>
+                                                    <input v-model="hiveMasterName" list="hive-master-name-history" maxlength="32" placeholder="Hive Master" />
+                                                </label>
+                                                <label v-for="(_, idx) in hiveWorkerNames" :key="'hive-worker-name-' + idx">
+                                                    <span>Worker {{ idx + 1 }}</span>
+                                                    <input v-model="hiveWorkerNames[idx]" list="hive-worker-name-history" maxlength="32" :placeholder="'Worker ' + (idx + 1)" />
+                                                </label>
+                                            </div>
+                                            <datalist id="hive-master-name-history">
+                                                <option v-for="name in hiveNameHistory.master" :key="'hm-' + name" :value="name"></option>
+                                            </datalist>
+                                            <datalist id="hive-worker-name-history">
+                                                <option v-for="name in hiveNameHistory.workers" :key="'hw-' + name" :value="name"></option>
+                                            </datalist>
+                                        </div>
+                                        <div class="ga-hive-compact-panel">
+                                            <div class="ga-hive-panel-title">人工控制</div>
+                                            <div class="ga-hive-control-grid">
+                                                <div class="ga-hive-control-actions">
+                                                    <select v-model="hiveControlTarget">
+                                                        <option v-for="target in hiveControlTargets" :key="target.value" :value="target.value">{{ target.label }}</option>
+                                                    </select>
+                                                    <button @click="hiveControlAgent('pause')" :disabled="hiveLoading" class="ga-btn ga-btn-xs ga-btn-secondary">暂停</button>
+                                                    <button @click="hiveControlAgent('resume')" :disabled="hiveLoading" class="ga-btn ga-btn-xs ga-btn-secondary">继续</button>
+                                                    <button @click="hiveControlAgent('stop')" :disabled="hiveLoading" class="ga-btn ga-btn-xs ga-btn-danger">停止选中</button>
+                                                </div>
+                                                <div class="ga-hive-budget-inline">
+                                                    <span>追加</span>
+                                                    <input v-model.number="hiveExtendMinutes" type="number" min="0" max="1440" />
+                                                    <span>分钟</span>
+                                                    <input v-model.number="hiveExtendTurns" type="number" min="0" max="500" />
+                                                    <span>轮</span>
+                                                    <button @click="extendHiveBudget" :disabled="hiveLoading" class="ga-btn ga-btn-xs ga-btn-secondary">追加预算</button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="rounded-lg border border-gray-200 dark:border-gray-700 p-3 text-xs text-gray-500 dark:text-gray-400 space-y-1">
+                                    <div class="truncate">workspace: {{ hiveState && hiveState.state && hiveState.state.hive_root }}</div>
+                                    <div class="truncate">outputs: {{ hiveState && hiveState.output_dir }} <span v-if="hiveState && hiveState.recent_outputs">({{ hiveState.recent_outputs.length }} recent)</span></div>
+                                    <div class="truncate">state: {{ hiveState && hiveState.state_path }}</div>
+                                    <div v-if="hiveState && hiveState.master_pid">master pid: {{ hiveState.master_pid }}</div>
+                                    <div v-if="hiveState && hiveState.worker_pids && hiveState.worker_pids.length">worker pids: {{ hiveState.worker_pids.join(', ') }}</div>
                                 </div>
                             </div>
                         </div>
@@ -2589,7 +3387,7 @@
                                                     :class="petConfig.skin_name === skin.name ? 'border-cyan-500 text-cyan-700 dark:text-cyan-300' : 'border-gray-300 text-gray-500 dark:text-gray-400'">
                                                     {{ petConfig.skin_name === skin.name ? '已选中' : '选择' }}
                                                 </button>
-                                                <button @click.stop="deletePetSkin(skin.name)" :disabled="skin.name === 'legacy-pet' || petSaving" class="ga-pet-skin-delete" :title="skin.name === 'legacy-pet' ? '内置桌宠不能删除' : '删除这个桌宠形象'">删除</button>
+                                                <button @click.stop="deletePetSkin(skin.name)" :disabled="petSaving" class="ga-pet-skin-delete" title="删除这个桌宠形象">删除</button>
                                             </div>
                                         </div>
                                     </div>
@@ -2693,7 +3491,7 @@
         </div>
         
         <!-- Overlay for mobile sidebar -->
-        <div v-if="sidebarOpen" @click="sidebarOpen = false" class="md:hidden fixed inset-0 bg-black/50 z-10"></div>
+        <div v-if="sidebarOpen" @click="sidebarOpen = false" class="ga-mobile-sidebar-overlay"></div>
     </div>
 
     <!-- Marked.js for Markdown rendering -->
@@ -2739,6 +3537,13 @@
         }
     </script>
     <script src="vendor/marked.umd.js"></script>
-    <script src="app.js?v=21"></script>
+    <script>
+        window.addEventListener('load', function () {
+            setTimeout(function () {
+                document.documentElement.classList.add('js-ready');
+            }, 800);
+        });
+    </script>
+    <script src="app.js?v=36"></script>
 </body>
 </html>

@@ -54,45 +54,71 @@ PYICON
 
 rm -rf "${STANDALONE_DIR}/${APP_NAME}.app"
 
-"${PYTHON_BIN}" -m PyInstaller \
-  --noconfirm \
-  --clean \
-  --windowed \
-  --name "${APP_NAME}" \
-  --distpath "${STANDALONE_DIR}" \
-  --workpath "${WORK_DIR}" \
-  --specpath "${SPEC_DIR}" \
-  --icon "${ICON_PATH}" \
-  --add-data "${ROOT_DIR}/frontend:frontend" \
-  --add-data "${ROOT_DIR}/assets:assets" \
-  --add-data "${ROOT_DIR}/memory:memory" \
-  --add-data "${ROOT_DIR}/frontends:frontends" \
-  --add-data "${ROOT_DIR}/plugins:plugins" \
-  --add-data "${ROOT_DIR}/reflect:reflect" \
-  --add-data "${ROOT_DIR}/api_server.py:." \
-  --add-data "${ROOT_DIR}/agentmain.py:." \
-  --add-data "${ROOT_DIR}/agent_loop.py:." \
-  --add-data "${ROOT_DIR}/ga.py:." \
-  --add-data "${ROOT_DIR}/llmcore.py:." \
-  --add-data "${ROOT_DIR}/path_utils.py:." \
-  --add-data "${ROOT_DIR}/simphtml.py:." \
-  --hidden-import "uvicorn.loops.auto" \
-  --hidden-import "uvicorn.protocols.http.auto" \
-  --hidden-import "uvicorn.protocols.websockets.auto" \
-  --hidden-import "uvicorn.lifespan.on" \
-  --hidden-import "anyio._backends._asyncio" \
-  --hidden-import "objc" \
-  --hidden-import "Cocoa" \
-  --hidden-import "Foundation" \
-  --hidden-import "WebKit" \
-  --hidden-import "PyObjCTools" \
-  --hidden-import "tkinter" \
-  --hidden-import "_tkinter" \
-  --hidden-import "PIL.ImageTk" \
-  --hidden-import "PIL.ImageSequence" \
-  --hidden-import "reflect.autonomous" \
-  --hidden-import "reflect.scheduler" \
-  "${ROOT_DIR}/launch_app.py"
+PYINSTALLER_ARGS=(
+  --noconfirm
+  --clean
+  --windowed
+  --name "${APP_NAME}"
+  --distpath "${STANDALONE_DIR}"
+  --workpath "${WORK_DIR}"
+  --specpath "${SPEC_DIR}"
+  --icon "${ICON_PATH}"
+  --add-data "${ROOT_DIR}/frontend:frontend"
+  --add-data "${ROOT_DIR}/assets:assets"
+  --add-data "${ROOT_DIR}/memory:memory"
+  --add-data "${ROOT_DIR}/frontends:frontends"
+  --add-data "${ROOT_DIR}/plugins:plugins"
+  --add-data "${ROOT_DIR}/reflect:reflect"
+  --add-data "${ROOT_DIR}/api_server.py:."
+  --add-data "${ROOT_DIR}/agentmain.py:."
+  --add-data "${ROOT_DIR}/agent_loop.py:."
+  --add-data "${ROOT_DIR}/ga.py:."
+  --add-data "${ROOT_DIR}/llmcore.py:."
+  --add-data "${ROOT_DIR}/path_utils.py:."
+  --add-data "${ROOT_DIR}/simphtml.py:."
+  --hidden-import "uvicorn.loops.auto"
+  --hidden-import "uvicorn.protocols.http.auto"
+  --hidden-import "uvicorn.protocols.websockets.auto"
+  --hidden-import "uvicorn.lifespan.on"
+  --hidden-import "anyio._backends._asyncio"
+  --hidden-import "objc"
+  --hidden-import "Cocoa"
+  --hidden-import "Foundation"
+  --hidden-import "WebKit"
+  --hidden-import "PyObjCTools"
+  --hidden-import "tkinter"
+  --hidden-import "_tkinter"
+  --hidden-import "sqlite3"
+  --hidden-import "_sqlite3"
+  --hidden-import "PIL.ImageTk"
+  --hidden-import "PIL.ImageSequence"
+  --hidden-import "reflect.autonomous"
+  --hidden-import "reflect.scheduler"
+)
+
+if [[ "${A3AGENT_INCLUDE_DOCPACK:-0}" == "1" ]]; then
+  PYINSTALLER_ARGS+=(
+    --hidden-import "fitz"
+    --hidden-import "pypdf"
+    --hidden-import "pdfplumber"
+    --hidden-import "pdfminer"
+    --hidden-import "pypdfium2"
+    --hidden-import "docx"
+    --hidden-import "openpyxl"
+    --hidden-import "pptx"
+    --hidden-import "pandas"
+    --hidden-import "lxml"
+    --hidden-import "cv2"
+    --hidden-import "yaml"
+    --hidden-import "markdownify"
+    --hidden-import "chardet"
+    --hidden-import "rank_bm25"
+    --hidden-import "striprtf"
+    --hidden-import "ebooklib"
+  )
+fi
+
+"${PYTHON_BIN}" -m PyInstaller "${PYINSTALLER_ARGS[@]}" "${ROOT_DIR}/launch_app.py"
 
 APP_DIR="${STANDALONE_DIR}/${APP_NAME}.app"
 

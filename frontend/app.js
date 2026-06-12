@@ -53,7 +53,7 @@ createApp({
             position: 'right-bottom',
             x: null,
             y: null,
-            skin_name: 'legacy-pet',
+            skin_name: 'dinosaur',
             always_on_top: true,
             show_shadow: false,
             click_action: 'toggle_main'
@@ -92,12 +92,14 @@ createApp({
         const interventionError = ref('');
         const interventionSaving = ref(false);
         const attachedImages = ref([]);
+        const attachedPaths = ref([]);
         const attachmentError = ref('');
         const attachmentUploading = ref(false);
         const fileInputRef = ref(null);
         const isComposing = ref(false);
         const goalState = ref(null);
         const goalObjective = ref('');
+        const goalPathAttachments = ref([]);
         const goalBudgetMinutes = ref(30);
         const goalMaxTurns = ref(80);
         const goalDonePrompt = ref('');
@@ -106,9 +108,13 @@ createApp({
         const goalError = ref('');
         const hiveState = ref(null);
         const hiveObjective = ref('');
+        const hivePathAttachments = ref([]);
         const hiveBudgetMinutes = ref(30);
         const hiveMaxTurns = ref(80);
         const hiveWorkerCount = ref(2);
+        const hiveMasterName = ref('Hive Master');
+        const hiveWorkerNames = ref(['Worker 1', 'Worker 2']);
+        const hiveNameHistory = ref({ master: [], workers: [] });
         const hiveLoading = ref(false);
         const hiveNotice = ref('');
         const hiveError = ref('');
@@ -141,27 +147,72 @@ createApp({
             const start = Math.max(0, messages.value.length - renderLimit.value);
             return messages.value.slice(start);
         });
+        const normalizeHiveName = (value, fallback = '') => String(value || '').replace(/\s+/g, ' ').trim().slice(0, 32) || fallback;
+        const currentHiveAgentNames = computed(() => {
+            const fromState = hiveState.value && hiveState.value.agent_names ? hiveState.value.agent_names : {};
+            const names = { master: normalizeHiveName(fromState.master || hiveMasterName.value, 'Hive Master') };
+            const count = Math.max(1, Math.min(Number(hiveWorkerCount.value) || 1, 6));
+            for (let i = 1; i <= count; i += 1) {
+                const id = `worker-${i}`;
+                names[id] = normalizeHiveName(fromState[id] || hiveWorkerNames.value[i - 1], `Worker ${i}`);
+            }
+            return names;
+        });
         const hiveFilteredPosts = computed(() => {
             const role = hivePostFilter.value || 'all';
             const q = String(hivePostSearch.value || '').trim().toLowerCase();
+            const names = currentHiveAgentNames.value || {};
+            const masterName = String(names.master || '').toLowerCase();
+            const workerNames = Object.keys(names).filter((k) => k.startsWith('worker-')).map((k) => String(names[k] || '').toLowerCase()).filter(Boolean);
             return (hivePosts.value || []).filter((post) => {
                 const author = String(post.author || '').toLowerCase();
                 const content = String(post.content || '').toLowerCase();
                 const roleOk =
                     role === 'all' ||
-                    (role === 'master' && author.includes('master')) ||
-                    (role === 'worker' && author.includes('worker')) ||
+                    (role === 'master' && (author.includes('master') || (masterName && author === masterName))) ||
+                    (role === 'worker' && (author.includes('worker') || workerNames.includes(author))) ||
                     (role === 'human' && (author.includes('human') || author.includes('user'))) ||
                     (role === 'system' && (author.includes('seed') || author.includes('system')));
                 const qOk = !q || author.includes(q) || content.includes(q);
                 return roleOk && qOk;
             });
         });
+        const hiveControlTargets = computed(() => {
+            const names = currentHiveAgentNames.value || {};
+            const count = Math.max(1, Math.min(Number(hiveWorkerCount.value) || 1, 6));
+            const items = [
+                { value: 'all', label: '全部 agent' },
+                { value: 'master', label: `Master · ${names.master || 'Hive Master'}` },
+                { value: 'workers', label: '全部 worker' },
+            ];
+            for (let i = 1; i <= count; i += 1) {
+                const id = `worker-${i}`;
+                items.push({ value: id, label: `Worker ${i} · ${names[id] || `Worker ${i}`}` });
+            }
+            return items;
+        });
+        const hiveMentionButtons = computed(() => {
+            const names = currentHiveAgentNames.value || {};
+            const count = Math.max(1, Math.min(Number(hiveWorkerCount.value) || 1, 6));
+            const out = [
+                { label: '@master', value: '@master' },
+            ];
+            if (names.master && names.master !== 'Hive Master') out.push({ label: `@${names.master}`, value: `@${names.master}` });
+            for (let i = 1; i <= count; i += 1) {
+                const id = `worker-${i}`;
+                out.push({ label: `@${id}`, value: `@${id}` });
+                if (names[id] && names[id] !== `Worker ${i}`) out.push({ label: `@${names[id]}`, value: `@${names[id]}` });
+            }
+            out.push({ label: '@all', value: '@all' });
+            return out;
+        });
 
         const workspacePath = ref("");
         const workspaceOptions = ref([]);
         const workspaceSelected = ref("");
         const apiReady = ref(false);
+        const nativeDropTarget = ref('chat');
+        const pathPickerBusy = ref(false);
         let bootstrapLoaded = false;
 
         const modeCommands = [
@@ -238,13 +289,61 @@ createApp({
             return 'monitor';
         };
 
+        const iconNameToKey = (name) => String(name || '')
+            .split(/[-_\s]+/)
+            .filter(Boolean)
+            .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+            .join('');
+
+        const setSvgAttrs = (node, attrs = {}) => {
+            Object.entries(attrs || {}).forEach(([key, value]) => {
+                if (value === null || value === undefined) return;
+                node.setAttribute(key, String(value));
+            });
+        };
+
+        const buildSvgNode = (parts) => {
+            const [tag, attrs, children] = parts;
+            const node = document.createElementNS('http://www.w3.org/2000/svg', tag);
+            setSvgAttrs(node, attrs);
+            (children || []).forEach((child) => node.appendChild(buildSvgNode(child)));
+            return node;
+        };
+
+        const renderLucideIcons = (root = document) => {
+            if (!window.lucide || !window.lucide.icons || !root) return;
+            const nodes = root.querySelectorAll ? root.querySelectorAll('[data-lucide]') : [];
+            nodes.forEach((el) => {
+                const iconName = el.getAttribute('data-lucide');
+                if (!iconName || el.getAttribute('data-lucide-rendered') === iconName) return;
+                const iconParts = window.lucide.icons[iconNameToKey(iconName)];
+                if (!iconParts) return;
+                const svg = buildSvgNode(['svg', {
+                    xmlns: 'http://www.w3.org/2000/svg',
+                    width: 24,
+                    height: 24,
+                    viewBox: '0 0 24 24',
+                    fill: 'none',
+                    stroke: 'currentColor',
+                    'stroke-width': 2,
+                    'stroke-linecap': 'round',
+                    'stroke-linejoin': 'round',
+                    'aria-hidden': 'true',
+                    focusable: 'false',
+                    class: 'lucide lucide-' + iconName
+                }, iconParts]);
+                el.replaceChildren(svg);
+                el.setAttribute('data-lucide-rendered', iconName);
+            });
+        };
+
         const renderThemeButton = () => {
             const mode = getStoredMode();
             const btn = document.getElementById('themeToggle');
             if (btn) {
                 btn.title = getModeLabel(mode);
                 btn.innerHTML = '<i data-lucide="' + getModeIcon(mode) + '" class="w-4 h-4"></i>';
-                if (window.lucide) lucide.createIcons();
+                renderLucideIcons(btn);
             }
         };
 
@@ -395,9 +494,51 @@ createApp({
             }
         };
 
+        const loadHiveNameHistory = () => {
+            try {
+                const raw = localStorage.getItem('ga_hive_name_history');
+                const data = raw ? JSON.parse(raw) : {};
+                hiveNameHistory.value = {
+                    master: Array.isArray(data.master) ? data.master.slice(0, 20) : [],
+                    workers: Array.isArray(data.workers) ? data.workers.slice(0, 40) : [],
+                };
+            } catch (e) {
+                hiveNameHistory.value = { master: [], workers: [] };
+            }
+        };
+
+        const rememberHiveNames = () => {
+            const addUnique = (list, value) => {
+                const name = normalizeHiveName(value);
+                if (!name) return list;
+                return [name, ...list.filter((x) => String(x).toLowerCase() !== name.toLowerCase())];
+            };
+            const history = hiveNameHistory.value || { master: [], workers: [] };
+            let masters = addUnique(Array.isArray(history.master) ? history.master : [], hiveMasterName.value).slice(0, 20);
+            let workers = Array.isArray(history.workers) ? history.workers : [];
+            hiveWorkerNames.value.forEach((name) => {
+                workers = addUnique(workers, name);
+            });
+            hiveNameHistory.value = { master: masters, workers: workers.slice(0, 40) };
+            try { localStorage.setItem('ga_hive_name_history', JSON.stringify(hiveNameHistory.value)); } catch (e) {}
+        };
+
+        const syncHiveWorkerNames = () => {
+            const count = Math.max(1, Math.min(Number(hiveWorkerCount.value) || 1, 6));
+            const next = [...hiveWorkerNames.value];
+            while (next.length < count) next.push(`Worker ${next.length + 1}`);
+            hiveWorkerNames.value = next.slice(0, count);
+            if (!hiveControlTargets.value.some((item) => item.value === hiveControlTarget.value)) {
+                hiveControlTarget.value = 'all';
+            }
+        };
+
         // Load Lucide icons
         onMounted(() => {
-            if (window.lucide) lucide.createIcons();
+            document.documentElement.classList.add('js-ready');
+            renderLucideIcons();
+            loadHiveNameHistory();
+            syncHiveWorkerNames();
 
             // Theme toggle button
             const btn = document.getElementById('themeToggle');
@@ -452,6 +593,8 @@ createApp({
                     sidebarOpen.value = false;
                 }
             });
+            window.addEventListener('dragover', stopFileDropNavigation, false);
+            window.addEventListener('drop', stopFileDropNavigation, false);
             
             // Connect to Global Stream
             initStream();
@@ -460,8 +603,23 @@ createApp({
         // Watch sidebar state to re-render icons if needed
         watch(sidebarOpen, () => {
             nextTick(() => {
-                if (window.lucide) lucide.createIcons();
+                renderLucideIcons();
             });
+        });
+
+        watch(hiveWorkerCount, syncHiveWorkerNames);
+
+        watch(hiveState, (state) => {
+            const names = state && state.agent_names ? state.agent_names : null;
+            if (!names) return;
+            hiveMasterName.value = normalizeHiveName(names.master, hiveMasterName.value || 'Hive Master');
+            const count = Math.max(1, Math.min(Number((state.state && state.state.worker_count) || hiveWorkerCount.value) || 1, 6));
+            const next = [];
+            for (let i = 1; i <= count; i += 1) {
+                next.push(normalizeHiveName(names[`worker-${i}`], hiveWorkerNames.value[i - 1] || `Worker ${i}`));
+            }
+            hiveWorkerNames.value = next;
+            hiveWorkerCount.value = count;
         });
 
         // Global Event Source for Stream
@@ -1158,7 +1316,7 @@ createApp({
                     if (el && typeof el.scrollIntoView === 'function') {
                         el.scrollIntoView({ block: 'nearest' });
                     }
-                    if (window.lucide) lucide.createIcons();
+                    renderLucideIcons();
                     return true;
                 }
                 await new Promise((r) => setTimeout(r, intervalMs));
@@ -1261,7 +1419,7 @@ createApp({
                 const remaining = Math.max(0, 12 - attachedImages.value.length);
                 const images = await Promise.all(list.slice(0, remaining).map(readImageFile));
                 attachedImages.value = [...attachedImages.value, ...images].slice(0, 12);
-                nextTick(() => { if (window.lucide) lucide.createIcons(); });
+                nextTick(() => { renderLucideIcons(); });
             } catch (e) {
                 attachmentError.value = String(e && e.message ? e.message : e);
             }
@@ -1297,11 +1455,229 @@ createApp({
             }
         };
 
-        const handleInputDrop = async (event) => {
-            const files = event && event.dataTransfer ? Array.from(event.dataTransfer.files || []) : [];
-            if (files.some((file) => String(file.type || '').startsWith('image/'))) {
+        const normalizeDroppedPath = (raw) => {
+            let value = String(raw || '').trim();
+            if (!value) return '';
+            value = value.replace(/^["']|["']$/g, '');
+            if (value.startsWith('file://')) {
+                try {
+                    value = decodeURI(value.replace(/^file:\/+/, ''));
+                    if (/^[A-Za-z]:/.test(value)) return value;
+                    return value.startsWith('/') ? value : `/${value}`;
+                } catch (e) {
+                    value = value.replace(/^file:\/+/, '');
+                }
+            }
+            return value;
+        };
+
+        const looksAbsolutePath = (path) => {
+            const value = String(path || '');
+            return value.startsWith('/') || /^[A-Za-z]:[\\/]/.test(value) || value.startsWith('\\\\');
+        };
+
+        const basenameOfPath = (path) => {
+            const value = String(path || '').replace(/[\\/]+$/, '');
+            const parts = value.split(/[\\/]/).filter(Boolean);
+            return parts.length ? parts[parts.length - 1] : value;
+        };
+
+        const pathAttachmentKind = (path, fallback = 'file') => {
+            if (fallback === 'directory') return 'directory';
+            const value = String(path || '').replace(/[\\/]+$/, '');
+            const name = basenameOfPath(value);
+            return /\.[A-Za-z0-9]{1,12}$/.test(name) ? 'file' : fallback;
+        };
+
+        const makePathAttachment = (path, kind = 'file') => {
+            const clean = normalizeDroppedPath(path);
+            if (!looksAbsolutePath(clean)) return null;
+            const resolvedKind = pathAttachmentKind(clean, kind);
+            return {
+                id: `${resolvedKind}_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+                kind: resolvedKind,
+                path: clean,
+                name: basenameOfPath(clean) || clean,
+            };
+        };
+
+        const iconForPathAttachment = (item) => {
+            if (!item) return 'file';
+            return item.kind === 'directory' ? 'folder' : 'file';
+        };
+
+        const pathAttachmentLabel = (item) => {
+            if (!item) return '';
+            return item.kind === 'directory' ? '目录' : '文件';
+        };
+
+        const targetPathAttachments = (target) => {
+            if (target === 'goal') return goalPathAttachments;
+            if (target === 'hive') return hivePathAttachments;
+            return attachedPaths;
+        };
+
+        const addPathAttachments = (target, paths, kind = 'file') => {
+            const listRef = targetPathAttachments(target || 'chat');
+            const current = Array.isArray(listRef.value) ? listRef.value : [];
+            const seen = new Set(current.map((item) => item.path));
+            const next = [...current];
+            (paths || []).forEach((path) => {
+                const item = makePathAttachment(path, kind);
+                if (!item || seen.has(item.path)) return;
+                seen.add(item.path);
+                next.push(item);
+            });
+            listRef.value = next.slice(0, 20);
+            nextTick(() => { renderLucideIcons(); });
+            return next.length > current.length;
+        };
+
+        const removePathAttachment = (target, id) => {
+            const listRef = targetPathAttachments(target || 'chat');
+            listRef.value = (listRef.value || []).filter((item) => item.id !== id);
+        };
+
+        const clearPathAttachments = (target = 'chat') => {
+            targetPathAttachments(target).value = [];
+        };
+
+        const formatPathAttachmentsForPrompt = (items) => {
+            const list = (items || []).filter((item) => item && item.path);
+            if (!list.length) return '';
+            const lines = list.map((item) => `- ${pathAttachmentLabel(item)} ${item.name}: ${item.path}`);
+            return `\n\n附件路径：\n${lines.join('\n')}`;
+        };
+
+        const droppedFilePath = (file) => {
+            if (!file) return '';
+            return normalizeDroppedPath(file.path || file.mozFullPath || '');
+        };
+
+        const extractDroppedPaths = (event) => {
+            const dt = event && event.dataTransfer ? event.dataTransfer : null;
+            if (!dt) return { paths: [], unresolved: [] };
+            const out = [];
+            const unresolved = [];
+            const add = (value) => {
+                const path = normalizeDroppedPath(value);
+                if (path && !out.includes(path)) out.push(path);
+            };
+            const addUnresolved = (value) => {
+                const name = String(value || '').trim();
+                if (name && !unresolved.includes(name)) unresolved.push(name);
+            };
+            try {
+                String(dt.getData('text/uri-list') || '')
+                    .split(/\r?\n/)
+                    .filter((line) => line && !line.startsWith('#'))
+                    .forEach(add);
+            } catch (e) {}
+            try {
+                String(dt.getData('text/plain') || '')
+                    .split(/\r?\n/)
+                    .forEach(add);
+            } catch (e) {}
+            Array.from(dt.files || []).forEach((file) => {
+                const path = droppedFilePath(file);
+                if (path) add(path);
+                else addUnresolved(file && file.name);
+            });
+            return { paths: out, unresolved };
+        };
+
+        const setPathTarget = (target) => {
+            nativeDropTarget.value = target || 'chat';
+        };
+
+        const showPathDropNotice = (target, unresolved = []) => {
+            const suffix = unresolved.length ? `：${unresolved.slice(0, 3).join('、')}` : '';
+            const message = `浏览器没有提供完整路径${suffix}。请使用旁边的“选择文件/目录”按钮，或在桌面 App 内拖入。`;
+            if (target === 'goal') goalError.value = message;
+            else if (target === 'hive') hiveError.value = message;
+            else attachmentError.value = message;
+        };
+
+        const appendNativePaths = (target, paths) => {
+            const targetName = target || nativeDropTarget.value || 'chat';
+            const ok = addPathAttachments(targetName, paths);
+            if (!ok) showPathDropNotice(targetName);
+            return ok;
+        };
+
+        window.A3AgentNativeDropPaths = (paths) => appendNativePaths(nativeDropTarget.value, paths || []);
+
+        const stopFileDropNavigation = (event) => {
+            if (!event) return;
+            const dt = event.dataTransfer;
+            const hasFile = !!(dt && Array.from(dt.types || []).some((type) => String(type).toLowerCase() === 'files'));
+            if (hasFile) {
                 event.preventDefault();
-                await addImageFiles(files);
+                event.stopPropagation();
+            }
+        };
+
+        const handlePromptDrop = async (event, targetRef, options = {}) => {
+            if (event) {
+                event.preventDefault();
+                event.stopPropagation();
+            }
+            const files = event && event.dataTransfer ? Array.from(event.dataTransfer.files || []) : [];
+            const imageFiles = files.filter((file) => String(file.type || '').startsWith('image/'));
+            if (options.attachImages && imageFiles.length) {
+                await addImageFiles(imageFiles);
+            }
+            const extracted = extractDroppedPaths(event);
+            const paths = extracted.paths
+                .filter((path) => {
+                    if (!options.attachImages) return true;
+                    return !imageFiles.some((file) => droppedFilePath(file) === path);
+                });
+            const inserted = addPathAttachments(nativeDropTarget.value, paths);
+            const unresolved = (extracted.unresolved || []).filter((name) => {
+                if (!options.attachImages) return true;
+                return !imageFiles.some((file) => file && file.name === name);
+            });
+            if (!inserted && unresolved.length) {
+                showPathDropNotice(nativeDropTarget.value, unresolved);
+            }
+        };
+
+        const handleInputDrop = async (event) => {
+            setPathTarget('chat');
+            await handlePromptDrop(event, inputMessage, { attachImages: true });
+        };
+
+        const handleGoalObjectiveDrop = async (event) => {
+            setPathTarget('goal');
+            await handlePromptDrop(event, goalObjective);
+        };
+
+        const handleHiveObjectiveDrop = async (event) => {
+            setPathTarget('hive');
+            await handlePromptDrop(event, hiveObjective);
+        };
+
+        const pickNativePath = async (target = 'chat', kind = 'file') => {
+            setPathTarget(target);
+            pathPickerBusy.value = true;
+            if (target === 'goal') goalError.value = '';
+            else if (target === 'hive') hiveError.value = '';
+            else attachmentError.value = '';
+            try {
+                const endpoint = kind === 'directory' ? '/api/native-paths/directory' : '/api/native-paths/file';
+                const res = await fetch(endpoint, { method: 'POST' });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) throw new Error(data.error || '打开选择器失败');
+                const paths = Array.isArray(data.paths) ? data.paths : [];
+                if (paths.length) addPathAttachments(target, paths, kind);
+            } catch (e) {
+                const message = String(e && e.message ? e.message : e);
+                if (target === 'goal') goalError.value = message;
+                else if (target === 'hive') hiveError.value = message;
+                else attachmentError.value = message;
+            } finally {
+                pathPickerBusy.value = false;
             }
         };
 
@@ -1331,14 +1707,14 @@ createApp({
         };
 
         const sendMessage = async () => {
-            if ((!inputMessage.value.trim() && !attachedImages.value.length) || activeSessionRunning.value) return;
+            if ((!inputMessage.value.trim() && !attachedImages.value.length && !attachedPaths.value.length) || activeSessionRunning.value) return;
 
             const prompt = handleInputCommand();
-            await submitPrompt(prompt || '请分析这张图片。', { clearInput: true, resetModes: true });
+            await submitPrompt(prompt || (attachedImages.value.length ? '请分析这张图片。' : '请查看这些附件路径。'), { clearInput: true, resetModes: true });
         };
 
         const submitPrompt = async (prompt, options = {}) => {
-            if ((!String(prompt || '').trim() && !attachedImages.value.length) || activeSessionRunning.value) return;
+            if ((!String(prompt || '').trim() && !attachedImages.value.length && !attachedPaths.value.length) || activeSessionRunning.value) return;
             if (!activeSessionId.value) {
                 await fetchSessions();
                 if (!activeSessionId.value) await createChatSession();
@@ -1369,10 +1745,11 @@ createApp({
 
             try {
                 const uploadedImages = await uploadAttachedImages();
+                const promptWithAttachments = `${String(prompt || '').trim()}${formatPathAttachmentsForPrompt(attachedPaths.value)}`.trim();
                 const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/chat`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ prompt, request_id: requestId, images: uploadedImages }),
+                    body: JSON.stringify({ prompt: promptWithAttachments, request_id: requestId, images: uploadedImages }),
                     signal: currentSubmitAbortController.signal
                 });
 
@@ -1398,6 +1775,7 @@ createApp({
 
                 if (options.clearInput !== false) inputMessage.value = '';
                 if (options.clearInput !== false) clearAttachedImages();
+                if (options.clearInput !== false) clearPathAttachments('chat');
                 if (options.resetModes !== false) selectedModeIds.value = [];
                 submitInFlight.value = false;
                 currentSubmitAbortController = null;
@@ -1527,48 +1905,56 @@ createApp({
             }
         };
 
-        const openModal = async (name) => {
+        const refreshModalData = async (name) => {
+            if (!name || name === 'orchestration') return;
+            if (!apiReady.value) {
+                await ensureBackendDataLoaded(2, 300).catch(() => false);
+            }
+            if (name === 'model') {
+                keyEditorOpen.value = false;
+                editingConfigId.value = '';
+                editApiKey.value = '';
+                await Promise.allSettled([fetchStatus(), fetchLlmConfigs()]);
+            } else if (name === 'communication') {
+                await fetchCommunicationConfigs();
+            } else if (name === 'todo') {
+                await fetchToDo();
+            } else if (name === 'sop') {
+                await fetchSopList();
+            } else if (name === 'schedule') {
+                await refreshScheduleList();
+            } else if (name === 'history') {
+                await fetchHistoryData();
+            } else if (name === 'memory') {
+                await fetchMemoryList();
+            } else if (name === 'backup') {
+                await fetchBackups();
+            } else if (name === 'pet') {
+                await Promise.allSettled([fetchPetSkins(), fetchPetConfig()]);
+            } else if (name === 'workspace') {
+                await Promise.allSettled([fetchWorkspace(), fetchWorkspaceOptions()]);
+            }
+        };
+
+        const openModal = (name) => {
             if (name === 'orchestration') {
                 openOrchestrationConsole();
                 return;
             }
             activeModal.value = name;
-            try {
-                if (!apiReady.value) {
-                    await ensureBackendDataLoaded(6, 500);
-                }
-                if (name === 'model') {
-                    keyEditorOpen.value = false;
-                    editingConfigId.value = '';
-                    editApiKey.value = '';
-                    await fetchStatus();
-                    await fetchLlmConfigs();
-                }
-                if (name === 'communication') await fetchCommunicationConfigs();
-                if (name === 'todo') await fetchToDo();
-                if (name === 'sop') await fetchSopList();
-                if (name === 'schedule') await refreshScheduleList();
-                if (name === 'history') await fetchHistoryData();
-                if (name === 'memory') await fetchMemoryList();
-                if (name === 'backup') await fetchBackups();
-                if (name === 'orchestration') {
-                    await fetchGoalStatus();
-                    await fetchHiveStatus();
-                    await fetchHivePosts();
-                }
-                if (name === 'pet') {
-                    await fetchPetSkins();
-                    await fetchPetConfig();
-                }
-                if (name === 'workspace') {
-                    await fetchWorkspace();
-                    await fetchWorkspaceOptions();
-                }
-            } finally {
-                nextTick(() => {
-                    if (window.lucide) lucide.createIcons();
+            sidebarOpen.value = window.innerWidth > 768 ? sidebarOpen.value : false;
+            nextTick(() => {
+                renderLucideIcons();
+            });
+            setTimeout(() => {
+                refreshModalData(name).catch((e) => {
+                    console.error('Refresh modal data failed:', e);
+                }).finally(() => {
+                    nextTick(() => {
+                        renderLucideIcons();
+                    });
                 });
-            }
+            }, 0);
         };
 
         const refreshOrchestrationPanel = async () => {
@@ -1587,15 +1973,29 @@ createApp({
                 }),
             ];
             await Promise.allSettled(tasks);
+            nextTick(() => {
+                renderLucideIcons();
+            });
         };
 
         const openOrchestrationConsole = () => {
             activeModal.value = 'orchestration';
-            orchestrationTab.value = 'hive';
+            sidebarOpen.value = window.innerWidth > 768 ? sidebarOpen.value : false;
+            if (hiveState.value && (hiveState.value.running || hiveState.value.state)) {
+                orchestrationTab.value = 'hive';
+            } else if (goalState.value && (goalState.value.running || goalState.value.state)) {
+                orchestrationTab.value = 'goal';
+            } else {
+                orchestrationTab.value = orchestrationTab.value || 'hive';
+            }
             nextTick(() => {
-                if (window.lucide) lucide.createIcons();
+                renderLucideIcons();
             });
-            refreshOrchestrationPanel();
+            setTimeout(() => {
+                refreshOrchestrationPanel().catch((e) => {
+                    hivePostsError.value = String(e && e.message ? e.message : e);
+                });
+            }, 0);
         };
 
         const closeModal = () => {
@@ -1668,7 +2068,7 @@ createApp({
             keyEditorNotice.value = '';
             keyEditorOpen.value = true;
             nextTick(() => {
-                if (window.lucide) lucide.createIcons();
+                renderLucideIcons();
             });
         };
 
@@ -1682,7 +2082,7 @@ createApp({
             keyEditorNotice.value = '';
             keyEditorOpen.value = true;
             nextTick(() => {
-                if (window.lucide) lucide.createIcons();
+                renderLucideIcons();
             });
         };
 
@@ -2081,7 +2481,7 @@ createApp({
         };
 
         const startGoalMode = async () => {
-            const objective = String(goalObjective.value || '').trim();
+            const objective = `${String(goalObjective.value || '').trim()}${formatPathAttachmentsForPrompt(goalPathAttachments.value)}`.trim();
             if (!objective) {
                 goalError.value = '请先填写目标';
                 return;
@@ -2104,6 +2504,7 @@ createApp({
                 if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
                 goalState.value = data;
                 goalNotice.value = 'Goal 模式已在后台启动';
+                clearPathAttachments('goal');
             } catch (e) {
                 goalError.value = String(e && e.message ? e.message : e);
             } finally {
@@ -2209,8 +2610,11 @@ createApp({
 
         const hivePostRole = (post) => {
             const author = String(post && post.author ? post.author : '').toLowerCase();
-            if (author.includes('master')) return 'master';
-            if (author.includes('worker')) return 'worker';
+            const names = currentHiveAgentNames.value || {};
+            const masterName = String(names.master || '').toLowerCase();
+            const workerNames = Object.keys(names).filter((k) => k.startsWith('worker-')).map((k) => String(names[k] || '').toLowerCase()).filter(Boolean);
+            if (author.includes('master') || (masterName && author === masterName)) return 'master';
+            if (author.includes('worker') || workerNames.includes(author)) return 'worker';
             if (author.includes('human') || author.includes('user')) return 'human';
             if (author.includes('seed') || author.includes('system')) return 'system';
             return 'agent';
@@ -2353,7 +2757,7 @@ createApp({
         };
 
         const startHiveMode = async () => {
-            const objective = String(hiveObjective.value || '').trim();
+            const objective = `${String(hiveObjective.value || '').trim()}${formatPathAttachmentsForPrompt(hivePathAttachments.value)}`.trim();
             if (!objective) {
                 hiveError.value = '请先填写 Hive 目标';
                 return;
@@ -2369,13 +2773,17 @@ createApp({
                         objective,
                         budget_minutes: Number(hiveBudgetMinutes.value) || 30,
                         max_turns: Number(hiveMaxTurns.value) || 80,
-                        worker_count: Number(hiveWorkerCount.value) || 2
+                        worker_count: Number(hiveWorkerCount.value) || 2,
+                        master_name: normalizeHiveName(hiveMasterName.value, 'Hive Master'),
+                        worker_names: hiveWorkerNames.value.map((name, idx) => normalizeHiveName(name, `Worker ${idx + 1}`))
                     })
                 });
                 const data = await res.json().catch(() => ({}));
                 if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
                 hiveState.value = data;
+                rememberHiveNames();
                 hiveNotice.value = 'Hive 模式已启动';
+                clearPathAttachments('hive');
                 await fetchHivePosts();
             } catch (e) {
                 hiveError.value = String(e && e.message ? e.message : e);
@@ -2595,7 +3003,7 @@ createApp({
         };
 
         const deletePetSkin = async (name) => {
-            if (!name || name === 'legacy-pet') return;
+            if (!name) return;
             if (!confirm(`确定删除桌宠形象「${name}」吗？此操作会删除对应皮肤文件。`)) return;
             petSaving.value = true;
             petError.value = '';
@@ -2622,17 +3030,17 @@ createApp({
         };
 
         const resetPetConfig = async () => {
-            petConfig.value = {
-                enabled: true,
-                size: 104,
-                position: 'right-bottom',
-                x: null,
-                y: null,
-                skin_name: 'legacy-pet',
-                always_on_top: true,
-                show_shadow: false,
-                click_action: 'toggle_main'
-            };
+                petConfig.value = {
+                    enabled: true,
+                    size: 104,
+                    position: 'right-bottom',
+                    x: null,
+                    y: null,
+                    skin_name: 'dinosaur',
+                    always_on_top: true,
+                    show_shadow: false,
+                    click_action: 'toggle_main'
+                };
             await savePetConfig();
         };
 
@@ -3059,6 +3467,9 @@ createApp({
             createChatSession,
             closeChatSession,
             attachedImages,
+            attachedPaths,
+            goalPathAttachments,
+            hivePathAttachments,
             attachmentError,
             attachmentUploading,
             fileInputRef,
@@ -3066,6 +3477,14 @@ createApp({
             handleImagePicker,
             handleInputPaste,
             handleInputDrop,
+            handleGoalObjectiveDrop,
+            handleHiveObjectiveDrop,
+            setPathTarget,
+            pickNativePath,
+            pathPickerBusy,
+            removePathAttachment,
+            iconForPathAttachment,
+            pathAttachmentLabel,
             removeAttachedImage,
             modeCommands,
             selectedModeCommands,
@@ -3125,6 +3544,9 @@ createApp({
             hiveBudgetMinutes,
             hiveMaxTurns,
             hiveWorkerCount,
+            hiveMasterName,
+            hiveWorkerNames,
+            hiveNameHistory,
             hiveLoading,
             hiveNotice,
             hiveError,
@@ -3150,6 +3572,8 @@ createApp({
             hiveBbsComposerOpen,
             hiveExpandedPosts,
             hiveFilteredPosts,
+            hiveControlTargets,
+            hiveMentionButtons,
             fetchHivePosts,
             refreshHivePanel,
             postHiveMessage,

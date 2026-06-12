@@ -41,7 +41,7 @@ fi
 
 "${BUILD_VENV_DIR}/bin/python" -m pip install -r "${REQUIREMENTS_FILE}"
 
-PYTHON_BIN="${BUILD_VENV_DIR}/bin/python" "${ROOT_DIR}/build_macos_standalone_app.sh" "${VERSION_NAME}"
+A3AGENT_INCLUDE_DOCPACK=1 PYTHON_BIN="${BUILD_VENV_DIR}/bin/python" "${ROOT_DIR}/build_macos_standalone_app.sh" "${VERSION_NAME}"
 "${ROOT_DIR}/build_macos_dmg.sh" "${VERSION_NAME}"
 
 mkdir -p "${ROOT_DIR}/release"

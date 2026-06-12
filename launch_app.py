@@ -363,6 +363,49 @@ class WebViewDelegate(NSObject):
         return None
 
 
+class DropAwareWebView(WKWebView):
+    def initWithFrame_configuration_(self, frame, configuration):
+        self = objc.super(DropAwareWebView, self).initWithFrame_configuration_(frame, configuration)
+        if self is None:
+            return None
+        try:
+            self.registerForDraggedTypes_(["NSFilenamesPboardType", "public.file-url"])
+        except Exception as e:
+            log(f"launcher: register file drag failed: {e}")
+        return self
+
+    def draggingEntered_(self, sender):
+        return 1  # NSDragOperationCopy
+
+    def prepareForDragOperation_(self, sender):
+        return True
+
+    def performDragOperation_(self, sender):
+        paths = []
+        try:
+            pasteboard = sender.draggingPasteboard()
+            filenames = pasteboard.propertyListForType_("NSFilenamesPboardType")
+            if filenames:
+                paths.extend([str(p) for p in filenames if p])
+            if not paths:
+                urls = pasteboard.readObjectsForClasses_options_([NSURL], {})
+                for url in urls or []:
+                    try:
+                        path = url.path()
+                        if path:
+                            paths.append(str(path))
+                    except Exception:
+                        pass
+            paths = list(dict.fromkeys(paths))
+            if paths:
+                script = "window.A3AgentNativeDropPaths && window.A3AgentNativeDropPaths(%s)" % json.dumps(paths)
+                self.evaluateJavaScript_completionHandler_(script, None)
+                return True
+        except Exception as e:
+            log(f"launcher: native file drop failed: {e}")
+        return False
+
+
 class AppController(NSObject):
     def toggleMainWindow_(self, sender):
         try:
@@ -459,7 +502,7 @@ def create_window(app):
     window.setTitle_(APP_NAME)
 
     config = WKWebViewConfiguration.alloc().init()
-    webview = WKWebView.alloc().initWithFrame_configuration_(rect, config)
+    webview = DropAwareWebView.alloc().initWithFrame_configuration_(rect, config)
     global WEBVIEW_DELEGATE_REF
     WEBVIEW_DELEGATE_REF = WebViewDelegate.alloc().init()
     webview.setUIDelegate_(WEBVIEW_DELEGATE_REF)

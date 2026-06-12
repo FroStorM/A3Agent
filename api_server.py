@@ -307,6 +307,16 @@ def _goal_log_path():
     return os.path.join(_goal_dir(), "goal_mode.log")
 
 
+def _child_python_env(extra_env=None):
+    env = os.environ.copy()
+    if getattr(sys, "frozen", False) or os.path.splitext(os.path.basename(sys.executable))[0].lower() == "a3agent":
+        env["A3AGENT_CHILD_PYTHON"] = "1"
+        env.setdefault("PYTHONUNBUFFERED", "1")
+    if extra_env:
+        env.update({str(k): str(v) for k, v in extra_env.items()})
+    return env
+
+
 def _hive_dir():
     path = os.path.join(get_user_data_dir(), "hive")
     os.makedirs(path, exist_ok=True)
@@ -377,12 +387,10 @@ def _stop_goal_process(mark_status="stopped"):
 def _start_goal_reflect_process(state_doc, state_path, log_path, cwd=None, extra_env=None):
     with open(state_path, "w", encoding="utf-8") as f:
         json.dump(state_doc, f, ensure_ascii=False, indent=2)
-    env = os.environ.copy()
+    env = _child_python_env(extra_env)
     env["GOAL_STATE"] = state_path
     env["GA_WORKSPACE_ROOT"] = get_workspace_root_dir()
     env["GA_USER_DATA_DIR"] = get_user_data_dir()
-    if extra_env:
-        env.update({str(k): str(v) for k, v in extra_env.items()})
     log_f = open(log_path, "a", encoding="utf-8")
     try:
         proc = subprocess.Popen(
@@ -412,6 +420,136 @@ def _proc_alive(proc):
     return bool(proc is not None and proc.poll() is None)
 
 
+def _pid_alive(pid):
+    try:
+        pid = int(pid or 0)
+    except Exception:
+        return False
+    if pid <= 0 or pid == os.getpid():
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def _pid_command(pid):
+    try:
+        pid = int(pid or 0)
+    except Exception:
+        return ""
+    if pid <= 0:
+        return ""
+    try:
+        return subprocess.check_output(["ps", "-p", str(pid), "-o", "command="], text=True, stderr=subprocess.DEVNULL, timeout=2).strip()
+    except Exception:
+        return ""
+
+
+def _is_hive_pid(pid, data=None):
+    cmd = _pid_command(pid)
+    if not cmd:
+        return False
+    data = data if isinstance(data, dict) else (_read_json_file(_hive_state_path()) or {})
+    board_key = str(data.get("board_key") or "").strip()
+    if board_key and board_key in cmd:
+        return True
+    markers = ("agent_bbs.py", "agent_team_worker.py", "goal_mode.py")
+    return any(marker in cmd for marker in markers) and ("A3Agent" in cmd or BASE_DIR in cmd)
+
+
+def _terminate_pid(pid, timeout=3.0, require_hive=False, hive_data=None):
+    try:
+        pid = int(pid or 0)
+    except Exception:
+        return False
+    if pid <= 0 or pid == os.getpid():
+        return False
+    if require_hive and not _is_hive_pid(pid, hive_data):
+        return False
+    if not _pid_alive(pid):
+        return False
+    killed = False
+    try:
+        pgid = os.getpgid(pid)
+    except Exception:
+        pgid = None
+    if pgid == pid:
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+            killed = True
+        except Exception:
+            pass
+    if not killed:
+        try:
+            os.kill(pid, signal.SIGTERM)
+            killed = True
+        except Exception:
+            return False
+    deadline = time.time() + float(timeout or 0)
+    while time.time() < deadline:
+        if not _pid_alive(pid):
+            return True
+        time.sleep(0.1)
+    try:
+        if pgid == pid:
+            os.killpg(pgid, signal.SIGKILL)
+        else:
+            os.kill(pid, signal.SIGKILL)
+    except Exception:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except Exception:
+            pass
+    return killed
+
+
+def _hive_state_pids(data=None):
+    data = data if isinstance(data, dict) else (_read_json_file(_hive_state_path()) or {})
+    pids = data.get("pids") if isinstance(data.get("pids"), dict) else {}
+    workers = []
+    for pid in pids.get("workers") or []:
+        try:
+            workers.append(int(pid))
+        except Exception:
+            pass
+    out = {"bbs": None, "master": None, "workers": workers}
+    for key in ("bbs", "master"):
+        try:
+            out[key] = int(pids.get(key) or 0) or None
+        except Exception:
+            out[key] = None
+    return out
+
+
+def _hive_orphan_pids(data=None):
+    data = data if isinstance(data, dict) else (_read_json_file(_hive_state_path()) or {})
+    needles = [str(data.get("board_key") or "").strip()]
+    needles = [n for n in needles if n]
+    if not needles:
+        return []
+    try:
+        raw = subprocess.check_output(["ps", "-axo", "pid=,command="], text=True, stderr=subprocess.DEVNULL, timeout=3)
+    except Exception:
+        return []
+    out = []
+    for line in raw.splitlines():
+        if "rg " in line or "/bin/zsh -c" in line:
+            continue
+        if not any(n in line for n in needles):
+            continue
+        if not any(marker in line for marker in ("agent_bbs.py", "agent_team_worker.py", "goal_mode.py", "--board_key", "board_key")):
+            continue
+        try:
+            pid = int(line.strip().split(None, 1)[0])
+        except Exception:
+            continue
+        if pid > 0 and pid != os.getpid() and pid not in out:
+            out.append(pid)
+    return out
+
+
 def _read_json_file(path):
     if not os.path.isfile(path):
         return None
@@ -427,9 +565,13 @@ def _hive_payload():
     data = _read_json_file(_hive_state_path()) or {}
     master_state = _read_json_file(data.get("master_goal_state_path") or os.path.join(_hive_dir(), "master_goal_state.json")) or {}
     workers = hive_process.get("workers") or []
-    bbs_alive = _proc_alive(hive_process.get("bbs"))
-    master_alive = _proc_alive(hive_process.get("master"))
+    stored_pids = _hive_state_pids(data)
+    bbs_pid = hive_process.get("bbs").pid if _proc_alive(hive_process.get("bbs")) else stored_pids.get("bbs")
+    master_pid = hive_process.get("master").pid if _proc_alive(hive_process.get("master")) else stored_pids.get("master")
+    bbs_alive = _proc_alive(hive_process.get("bbs")) or _pid_alive(bbs_pid)
+    master_alive = _proc_alive(hive_process.get("master")) or _pid_alive(master_pid)
     worker_pids = [p.pid for p in workers if _proc_alive(p)]
+    worker_pids.extend(pid for pid in (stored_pids.get("workers") or []) if _pid_alive(pid) and pid not in worker_pids)
     worker_alive = bool(worker_pids)
     master_status = master_state.get("status") or ("running" if master_alive else "")
     budget_seconds = float(master_state.get("budget_seconds") or (float(data.get("budget_minutes") or 0) * 60) or 0)
@@ -492,9 +634,10 @@ def _hive_payload():
         "max_turns": max_turns,
         "turns_remaining": turns_remaining,
         "paused_targets": data.get("paused_targets") or [],
+        "agent_names": data.get("agent_names") or {},
         "worker_pids": worker_pids,
-        "bbs_pid": hive_process.get("bbs").pid if bbs_alive else None,
-        "master_pid": hive_process.get("master").pid if master_alive else None,
+        "bbs_pid": bbs_pid if bbs_alive else None,
+        "master_pid": master_pid if master_alive else None,
         "output_dir": output_dir,
         "recent_outputs": recent_outputs,
     }
@@ -509,7 +652,7 @@ def _terminate_proc(proc):
     if not _proc_alive(proc):
         return
     try:
-        proc.terminate()
+        _terminate_pid(proc.pid)
         proc.wait(timeout=3)
     except Exception:
         try:
@@ -537,9 +680,30 @@ def _stop_hive_processes(mark_status="stopped"):
     for proc in list(hive_process.get("workers") or []):
         _terminate_proc(proc)
     _terminate_proc(hive_process.get("bbs"))
+    state_pids = _hive_state_pids(data)
+    for pid in [state_pids.get("master"), *(state_pids.get("workers") or []), state_pids.get("bbs")]:
+        _terminate_pid(pid, require_hive=True, hive_data=data)
+    for pid in _hive_orphan_pids(data):
+        _terminate_pid(pid, require_hive=True, hive_data=data)
+    hive_process.update({"bbs": None, "master": None, "workers": [], "state_path": _hive_state_path(), "started_at": 0})
     if data:
         data["status"] = mark_status
         data["end_time"] = time.time()
+        data.setdefault("stopped_pids", [])
+        data["stopped_pids"] = sorted(set(data.get("stopped_pids") or []) | set(
+            [p for p in [state_pids.get("master"), *(state_pids.get("workers") or []), state_pids.get("bbs")] if p]
+        ))
+        master_state_path = data.get("master_goal_state_path")
+        if master_state_path:
+            master_state = _read_json_file(master_state_path) or {}
+            if master_state:
+                master_state["status"] = mark_status
+                master_state["end_time"] = data["end_time"]
+                try:
+                    with open(master_state_path, "w", encoding="utf-8") as f:
+                        json.dump(master_state, f, ensure_ascii=False, indent=2)
+                except Exception:
+                    pass
         _write_hive_state(data)
 
 
@@ -2175,6 +2339,7 @@ def process_agent_output(display_queue, source="user", prompt_text=None, run_id=
 
 def process_session_agent_output(sess, display_queue, source="user", prompt_text=None, run_id=None, cancel_event=None, request_id=None):
     finished_normally = False
+    agent_idle_since = None
 
     def emit(payload):
         payload["session_id"] = sess.id
@@ -2218,7 +2383,16 @@ def process_session_agent_output(sess, display_queue, source="user", prompt_text
             try:
                 item = display_queue.get(timeout=0.2)
             except queue.Empty:
+                agent_running = bool(getattr(sess.agent, "is_running", False))
+                if agent_running:
+                    agent_idle_since = None
+                elif agent_idle_since is None:
+                    agent_idle_since = time.time()
+                elif time.time() - agent_idle_since > 2.0:
+                    _debug_log("session_stream_idle_exit", session_id=sess.id, run_id=run_id, request_id=request_id)
+                    break
                 continue
+            agent_idle_since = None
             if "next" in item:
                 if cancel_event is None or not cancel_event.is_set():
                     chunk_text = item.get("next", "")
@@ -2328,6 +2502,7 @@ class ChatSession:
         self.thread = None
         self.status = "idle"
         self.active_runs = {}
+        self.active_run_started = {}
         self.lock = threading.RLock()
 
 
@@ -2380,6 +2555,7 @@ class ChatSessionManager:
         with self.lock:
             out = []
             for sess in self.sessions.values():
+                self._reconcile_session(sess)
                 payload = _conversation_session_payload(sess.data, path=self._path(sess.id), current=(sess.id == self.active_session_id))
                 payload["status"] = sess.status
                 payload["active"] = sess.id == self.active_session_id
@@ -2394,7 +2570,26 @@ class ChatSessionManager:
             sess = self.sessions.get(sid)
             if sess is None:
                 raise KeyError(sid)
+            self._reconcile_session(sess)
             return sess
+
+    def _reconcile_session(self, sess):
+        with sess.lock:
+            if sess.status != "running":
+                return
+            agent = sess.agent
+            if agent is not None and getattr(agent, "is_running", False):
+                return
+            now = time.time()
+            starts = list(getattr(sess, "active_run_started", {}).values())
+            newest = max(starts) if starts else 0
+            if newest and now - newest < 2.0:
+                return
+            sess.active_runs.clear()
+            sess.active_run_started.clear()
+            sess.status = "idle"
+            self._save(sess)
+            _debug_log("session_status_reconciled", session_id=sess.id)
 
     def create(self, title=""):
         with self.lock:
@@ -2468,12 +2663,14 @@ class ChatSessionManager:
         cancel_event = threading.Event()
         with sess.lock:
             sess.active_runs[run_id] = cancel_event
+            sess.active_run_started[run_id] = time.time()
             sess.status = "running"
         return run_id, cancel_event
 
     def finish_run(self, sess, run_id):
         with sess.lock:
             sess.active_runs.pop(run_id, None)
+            sess.active_run_started.pop(run_id, None)
             if not sess.active_runs and sess.status == "running":
                 sess.status = "idle"
             self._save(sess)
@@ -2485,6 +2682,8 @@ class ChatSessionManager:
                     ev.set()
                 except Exception:
                     pass
+            sess.active_runs.clear()
+            sess.active_run_started.clear()
             if sess.agent and hasattr(sess.agent, "abort"):
                 try:
                     sess.agent.abort()
@@ -2695,6 +2894,84 @@ def get_history_raw():
     }
 
 
+def _select_macos_paths(kind="file"):
+    if kind == "directory":
+        script = '''
+set chosenPath to choose folder with prompt "选择目录"
+return POSIX path of chosenPath
+'''
+    else:
+        script = '''
+set chosenFiles to choose file with prompt "选择文件" with multiple selections allowed
+set output to ""
+repeat with chosenFile in chosenFiles
+    set output to output & POSIX path of chosenFile & linefeed
+end repeat
+return output
+'''
+    proc = subprocess.run(
+        ["/usr/bin/osascript", "-e", script],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=300,
+    )
+    if proc.returncode != 0:
+        err = (proc.stderr or "").strip()
+        if "User canceled" in err or "用户已取消" in err:
+            return []
+        raise RuntimeError(err or "系统路径选择器打开失败")
+    return [os.path.abspath(p.strip()) for p in (proc.stdout or "").splitlines() if p.strip()]
+
+
+def _select_native_paths(kind="file"):
+    if sys.platform == "darwin":
+        return _select_macos_paths(kind)
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+    except Exception as e:
+        raise RuntimeError(f"系统路径选择器不可用: {e}")
+
+    root = None
+    try:
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            root.attributes("-topmost", True)
+        except Exception:
+            pass
+        if kind == "directory":
+            selected = filedialog.askdirectory(title="选择目录")
+            paths = [selected] if selected else []
+        else:
+            selected = filedialog.askopenfilenames(title="选择文件")
+            paths = list(selected or [])
+        return [os.path.abspath(p) for p in paths if p]
+    finally:
+        try:
+            if root is not None:
+                root.destroy()
+        except Exception:
+            pass
+
+
+@app.post("/api/native-paths/file")
+def select_native_file_paths():
+    try:
+        return {"status": "ok", "paths": _select_native_paths("file")}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.post("/api/native-paths/directory")
+def select_native_directory_path():
+    try:
+        return {"status": "ok", "paths": _select_native_paths("directory")}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
 @app.post("/api/uploads/images")
 async def upload_images(request: Request):
     data = await request.json()
@@ -2890,6 +3167,48 @@ HIVE_MASTER_DUTY = """Hive Master 职责：
 HIVE_DONE_PROMPT = "关闭所有你拉起的worker，并在BBS发一条帖子，宣告你管理的任务结束，worker除了明确追加任务外，不应再回应。"
 
 
+def _clean_hive_agent_name(value, fallback):
+    name = re.sub(r"[\r\n\t]+", " ", str(value or "")).strip()
+    name = re.sub(r"\s{2,}", " ", name)
+    if not name:
+        name = fallback
+    return name[:32]
+
+
+def _normalize_hive_agent_names(master_name, worker_names, worker_count):
+    raw_workers = worker_names if isinstance(worker_names, list) else []
+    used = set()
+
+    def unique_name(value, fallback):
+        base = _clean_hive_agent_name(value, fallback)
+        name = base
+        n = 2
+        while name.lower() in used:
+            suffix = f" {n}"
+            name = (base[: max(1, 32 - len(suffix))] + suffix).strip()
+            n += 1
+        used.add(name.lower())
+        return name
+
+    names = {"master": unique_name(master_name, "Hive Master")}
+    for i in range(1, worker_count + 1):
+        names[f"worker-{i}"] = unique_name(raw_workers[i - 1] if i - 1 < len(raw_workers) else "", f"Worker {i}")
+    return names
+
+
+def _hive_team_prompt(agent_names):
+    if not isinstance(agent_names, dict):
+        agent_names = {}
+    lines = [
+        "Hive 团队成员与称呼：",
+        f"- master: {agent_names.get('master') or 'Hive Master'}（也可被 @master / @hive-master 点名）",
+    ]
+    for key in sorted((k for k in agent_names if str(k).startswith("worker-")), key=lambda x: int(str(x).split("-", 1)[1]) if str(x).split("-", 1)[1].isdigit() else 999):
+        lines.append(f"- {key}: {agent_names.get(key)}（也可被 @{key} / @worker 点名）")
+    lines.append("角色固定为 Master 与 worker；自定义名字仅用于 BBS 显示、点名和人工引导。")
+    return "\n".join(lines)
+
+
 def _hive_http_json(url, payload, key):
     import urllib.request
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -2907,21 +3226,37 @@ def _hive_http_get_json(url, key):
     return json.loads(raw) if raw else []
 
 
-def _hive_target_procs(target):
-    target = str(target or "all").lower().strip()
-    procs = []
+def _hive_target_entries(target):
+    target_raw = str(target or "all").strip()
+    target = target_raw.lower()
+    state_data = _read_json_file(_hive_state_path()) or {}
+    agent_names = state_data.get("agent_names") or {}
+    state_pids = _hive_state_pids(state_data)
+    name_to_id = {str(v).lower().strip(): str(k).lower().strip() for k, v in agent_names.items() if v}
+    if target in name_to_id:
+        target = name_to_id[target]
+    entries = []
     if target in ("all", "master", "hive-master"):
-        procs.append(("master", hive_process.get("master")))
+        entries.append(("master", hive_process.get("master"), state_pids.get("master")))
     workers = hive_process.get("workers") or []
     if target in ("all", "workers", "worker", "all-workers"):
-        procs.extend((f"worker-{i}", p) for i, p in enumerate(workers, start=1))
+        max_workers = max(len(workers), len(state_pids.get("workers") or []))
+        for i in range(1, max_workers + 1):
+            proc = workers[i - 1] if i - 1 < len(workers) else None
+            pid = state_pids.get("workers")[i - 1] if i - 1 < len(state_pids.get("workers") or []) else None
+            entries.append((f"worker-{i}", proc, pid))
     else:
         m = re.match(r"worker[-_]?(\d+)$", target)
         if m:
             idx = int(m.group(1)) - 1
-            if 0 <= idx < len(workers):
-                procs.append((f"worker-{idx + 1}", workers[idx]))
-    return [(name, proc) for name, proc in procs if _proc_alive(proc)]
+            proc = workers[idx] if 0 <= idx < len(workers) else None
+            pid = state_pids.get("workers")[idx] if 0 <= idx < len(state_pids.get("workers") or []) else None
+            entries.append((f"worker-{idx + 1}", proc, pid))
+    return [(name, proc, pid) for name, proc, pid in entries if _proc_alive(proc) or _pid_alive(pid)]
+
+
+def _hive_target_procs(target):
+    return [(name, proc) for name, proc, _pid in _hive_target_entries(target) if _proc_alive(proc)]
 
 
 def _hive_post_system(content):
@@ -2980,6 +3315,8 @@ async def start_hive_mode(request: Request):
     budget_minutes = max(1, min(float(data.get("budget_minutes") or 30), 24 * 60))
     max_turns = max(1, min(int(data.get("max_turns") or 80), 500))
     worker_count = max(1, min(int(data.get("worker_count") or 1), 6))
+    agent_names = _normalize_hive_agent_names(data.get("master_name"), data.get("worker_names"), worker_count)
+    team_prompt = _hive_team_prompt(agent_names)
     port = int(data.get("port") or _free_port())
     board_key = "hive_" + uuid.uuid4().hex[:12]
     base_url = f"http://127.0.0.1:{port}"
@@ -2995,6 +3332,7 @@ async def start_hive_mode(request: Request):
         "budget_minutes": budget_minutes,
         "max_turns": max_turns,
         "worker_count": worker_count,
+        "agent_names": agent_names,
         "port": port,
         "base_url": base_url,
         "board_key": board_key,
@@ -3014,6 +3352,7 @@ async def start_hive_mode(request: Request):
         bbs_proc = subprocess.Popen(
             [sys.executable, os.path.join(BASE_DIR, "assets", "agent_bbs.py"), "--cwd", hive_root, "--port", str(port), "--key", board_key],
             cwd=BASE_DIR,
+            env=_child_python_env({"GA_HIVE_ROOT": hive_root, "GA_HIVE_OUTPUT_DIR": output_dir}),
             stdout=bbs_log,
             stderr=subprocess.STDOUT,
             start_new_session=True,
@@ -3029,6 +3368,7 @@ async def start_hive_mode(request: Request):
             f"BBS：{base_url}/readme?key={board_key}\n"
             f"工作目录：{hive_root}\n\n"
             f"产出目录：{output_dir}\n\n"
+            f"{team_prompt}\n\n"
             f"{HIVE_MASTER_DUTY}\n\n"
             "附加说明：此为最终目标，worker不要接单，先等hive master拆分子任务。"
             "所有交付文件必须写入产出目录，BBS只写进度、分工、阻塞和最终清单。"
@@ -3037,6 +3377,8 @@ async def start_hive_mode(request: Request):
 
         workers = []
         for i in range(1, worker_count + 1):
+            worker_id = f"worker-{i}"
+            worker_name = agent_names.get(worker_id) or f"Worker {i}"
             worker_log = open(_hive_log_path(f"worker_{i}"), "a", encoding="utf-8")
             proc = subprocess.Popen(
                 [
@@ -3044,10 +3386,11 @@ async def start_hive_mode(request: Request):
                     "--reflect", os.path.join(BASE_DIR, "reflect", "agent_team_worker.py"),
                     "--base_url", base_url,
                     "--board_key", board_key,
-                    "--name", f"hive-worker-{i}",
+                    "--name", worker_name,
+                    "--agent_id", worker_id,
                 ],
                 cwd=hive_root,
-                env={**os.environ.copy(), "GA_HIVE_ROOT": hive_root, "GA_HIVE_OUTPUT_DIR": output_dir},
+                env=_child_python_env({"GA_HIVE_ROOT": hive_root, "GA_HIVE_OUTPUT_DIR": output_dir}),
                 stdout=worker_log,
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
@@ -3062,6 +3405,7 @@ async def start_hive_mode(request: Request):
             f"HIVE_OUTPUT_DIR: {output_dir}\n"
             "所有最终产出、进度文件和交付文件必须写入 HIVE_OUTPUT_DIR；不要写到 A3Agent/temp 或当前项目根目录。\n"
             "在 BBS 发帖请使用 /readme 中给出的 register/post JSON 示例，不要自行猜测 /posts 或 /api/posts。\n\n"
+            f"{team_prompt}\n\n"
             f"{HIVE_MASTER_DUTY}"
         )
         master_state_path = os.path.join(_hive_dir(), "master_goal_state.json")
@@ -3144,7 +3488,7 @@ async def control_hive_agent(request: Request):
     target = str(data.get("target") or "all").lower().strip()
     if action not in ("pause", "resume", "stop"):
         return JSONResponse(status_code=400, content={"error": "action must be pause, resume, or stop"})
-    targets = _hive_target_procs(target)
+    targets = _hive_target_entries(target)
     if not targets:
         return JSONResponse(status_code=404, content={"error": f"no running target: {target}"})
     state_data = _read_json_file(_hive_state_path()) or {}
@@ -3155,13 +3499,26 @@ async def control_hive_agent(request: Request):
         sig = signal.SIGSTOP
     elif action == "resume":
         sig = signal.SIGCONT
-    for name, proc in targets:
+    for name, proc, pid in targets:
         try:
             if action == "stop":
-                _terminate_proc(proc)
+                if _proc_alive(proc):
+                    _terminate_proc(proc)
+                else:
+                    _terminate_pid(pid, require_hive=True, hive_data=state_data)
                 paused.discard(name)
             else:
-                os.kill(proc.pid, sig)
+                live_pid = proc.pid if _proc_alive(proc) else int(pid or 0)
+                if not _proc_alive(proc) and not _is_hive_pid(live_pid, state_data):
+                    continue
+                try:
+                    pgid = os.getpgid(live_pid)
+                    if pgid == live_pid:
+                        os.killpg(pgid, sig)
+                    else:
+                        os.kill(live_pid, sig)
+                except Exception:
+                    os.kill(live_pid, sig)
                 if action == "pause":
                     paused.add(name)
                 else:
@@ -3175,7 +3532,9 @@ async def control_hive_agent(request: Request):
         state_data["stopped_targets"] = sorted(set(state_data["stopped_targets"]) | set(changed))
     _write_hive_state(state_data)
     label = {"pause": "暂停", "resume": "继续", "stop": "停止"}[action]
-    _hive_post_system(f"@all [人工控制] 已{label}：{', '.join(changed) or target}。相关 agent 请按此状态调整，不要绕过人工控制。")
+    agent_names = state_data.get("agent_names") or {}
+    changed_labels = [f"{name}({agent_names.get(name)})" if agent_names.get(name) else name for name in changed]
+    _hive_post_system(f"@all [人工控制] 已{label}：{', '.join(changed_labels) or target}。相关 agent 请按此状态调整，不要绕过人工控制。")
     return {"status": action, "target": target, "changed": changed, **_hive_payload()}
 
 
@@ -3877,6 +4236,7 @@ async def communication_config_action(request: Request):
                 subprocess.Popen(
                     [python_path, "-u", path],
                     cwd=os.path.dirname(os.path.abspath(__file__)),
+                    env=_child_python_env() if os.path.abspath(python_path) == os.path.abspath(sys.executable) else os.environ.copy(),
                     stdout=log_file,
                     stderr=subprocess.STDOUT,
                     start_new_session=True,
@@ -4038,7 +4398,7 @@ DESKTOP_PET_DEFAULT_CONFIG = {
     "position": "right-bottom",
     "x": None,
     "y": None,
-    "skin_name": "legacy-pet",
+    "skin_name": "dinosaur",
     "always_on_top": True,
     "show_shadow": False,
     "click_action": "toggle_main",
@@ -4084,10 +4444,9 @@ def _sanitize_desktop_pet_config(data):
     if cfg.get("click_action") not in {"toggle_main", "none"}:
         cfg["click_action"] = DESKTOP_PET_DEFAULT_CONFIG["click_action"]
     skin_name = cfg.get("skin_name") or DESKTOP_PET_DEFAULT_CONFIG["skin_name"]
-    if skin_name != "legacy-pet":
-        skin_dir = os.path.join(resource_path("frontends", "skins"), str(skin_name))
-        if not os.path.isdir(skin_dir):
-            skin_name = DESKTOP_PET_DEFAULT_CONFIG["skin_name"]
+    skin_dir = os.path.join(resource_path("frontends", "skins"), str(skin_name))
+    if not os.path.isdir(skin_dir):
+        skin_name = DESKTOP_PET_DEFAULT_CONFIG["skin_name"]
     cfg["skin_name"] = skin_name
     return cfg
 
@@ -4119,13 +4478,7 @@ def _desktop_pet_skins_dir():
 
 def _desktop_pet_skin_list():
     skins_dir = _desktop_pet_skins_dir()
-    result = [{
-        "name": "legacy-pet",
-        "label": "默认桌宠",
-        "description": "当前内置 pet.gif 桌宠",
-        "style": "legacy",
-        "preview_url": "/api/desktop_pet/skin_preview?name=legacy-pet",
-    }]
+    result = []
     if not os.path.isdir(skins_dir):
         return result
     for name in sorted(os.listdir(skins_dir)):
@@ -4150,8 +4503,6 @@ def _desktop_pet_skin_list():
 
 def _desktop_pet_skin_preview_path(name):
     name = os.path.basename(str(name or ""))
-    if name == "legacy-pet":
-        return DESKTOP_PET_LEGACY_PREVIEW
     skin_dir = os.path.join(_desktop_pet_skins_dir(), name)
     skin_json = os.path.join(skin_dir, "skin.json")
     if not os.path.isfile(skin_json):
@@ -4194,8 +4545,8 @@ def _desktop_pet_skin_preview_path(name):
 
 def _delete_desktop_pet_skin(name):
     safe_name = os.path.basename(str(name or ""))
-    if not safe_name or safe_name == "legacy-pet":
-        return False, "内置桌宠不能删除"
+    if not safe_name:
+        return False, "桌宠名称不能为空"
     skin_dir = os.path.abspath(os.path.join(_desktop_pet_skins_dir(), safe_name))
     skins_root = os.path.abspath(_desktop_pet_skins_dir())
     if not (skin_dir == skins_root or skin_dir.startswith(skins_root + os.sep)):
